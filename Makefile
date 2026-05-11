@@ -12,7 +12,7 @@ BUILD_DIR := build
 EXE       := kaleidoscope
 TARGET    := $(BUILD_DIR)/$(EXE)
 RT_OBJ    := $(BUILD_DIR)/host_runtime.o
-KAL_FILE  ?= examples/pricing.kal
+KAL_FILE  ?= examples/amortization.kal
 AOT_RUNNER := $(BUILD_DIR)/aot_runner
 EMBED_SMOKE := $(BUILD_DIR)/embed_smoke
 
@@ -20,7 +20,7 @@ CXX      := $(shell $(LLVM_CONFIG) --bindir)/clang++
 CC       := $(shell $(LLVM_CONFIG) --bindir)/clang
 CXXFLAGS := -std=c++20 -O1 -Wall -Wextra -Wno-unused-parameter -Isrc -Iinclude
 
-CORE_SRCS := src/frontend/Lexer.cpp src/frontend/Parser.cpp src/backend/Codegen.cpp \
+CORE_SRCS := src/frontend/Lexer.cpp src/frontend/Parser.cpp src/frontend/AST.cpp src/backend/Codegen.cpp \
 	src/backend/passes/AlgebraicSimplifyPass.cpp src/driver/Driver.cpp src/host/HostABI.cpp \
 	src/embed/Embed.cpp
 MAIN_SRC  := src/main.cpp

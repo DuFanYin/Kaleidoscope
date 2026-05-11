@@ -1,6 +1,7 @@
 #include "frontend/Lexer.h"
 #include "frontend/Parser.h"
 #include "frontend/AST.h"
+#include "frontend/Types.h"
 
 #include <cctype>
 #include <cstdio>
@@ -33,6 +34,7 @@ void installDefaultBinaryOperatorPrecedence() {
   BinopPrecedence['+'] = 25;
   BinopPrecedence['-'] = 25;
   BinopPrecedence['*'] = 40;
+  BinopPrecedence['/'] = 40;
 }
 
 /// GetTokPrecedence - Get the precedence of the pending binary operator token.
@@ -67,12 +69,40 @@ std::unique_ptr<PrototypeAST> LogErrorP(const char *Str)
 
 static std::unique_ptr<ExprAST> ParseExpression();
 
-/// numberexpr ::= number
+/// numberexpr ::= number | int literal
 static std::unique_ptr<ExprAST> ParseNumberExpr()
 {
+  if (CurTok == tok_int_lit)
+  {
+    auto Result =
+        std::make_unique<NumberExprAST>(IntLitVal, static_cast<double>(IntLitVal));
+    getNextToken();
+    return Result;
+  }
   auto Result = std::make_unique<NumberExprAST>(NumVal);
-  getNextToken(); // consume the number
-  return std::move(Result);
+  getNextToken();
+  return Result;
+}
+
+static bool consumeKalTypeKeyword(KalType *Out)
+{
+  switch (CurTok)
+  {
+  case tok_kw_int:
+    getNextToken();
+    *Out = KalType::Int32;
+    return true;
+  case tok_kw_double:
+    getNextToken();
+    *Out = KalType::Double;
+    return true;
+  case tok_kw_bool:
+    getNextToken();
+    *Out = KalType::Bool;
+    return true;
+  default:
+    return false;
+  }
 }
 
 /// parenexpr ::= '(' expression ')'
@@ -227,13 +257,14 @@ static std::unique_ptr<ExprAST> ParseWhileExpr()
   return std::make_unique<WhileExprAST>(std::move(Cond), std::move(Body));
 }
 
-/// varexpr ::= 'var' identifier ('=' expression)?
-//                    (',' identifier ('=' expression)?)* 'in' expression
+/// varexpr ::= 'var' typedbinding (',' typedbinding)* 'in' expression
+/// typedbinding ::= identifier ':' type '=' expression   (declaration + init
+/// together; no separate uninitialized declaration.)
 static std::unique_ptr<ExprAST> ParseVarExpr()
 {
   getNextToken(); // eat the var.
 
-  std::vector<std::pair<std::string, std::unique_ptr<ExprAST>>> VarNames;
+  std::vector<std::tuple<std::string, KalType, std::unique_ptr<ExprAST>>> VarNames;
 
   // At least one variable name is required.
   if (CurTok != tok_identifier)
@@ -244,18 +275,25 @@ static std::unique_ptr<ExprAST> ParseVarExpr()
     std::string Name = IdentifierStr;
     getNextToken(); // eat identifier.
 
-    // Read the optional initializer.
-    std::unique_ptr<ExprAST> Init = nullptr;
-    if (CurTok == '=')
-    {
-      getNextToken(); // eat the '='.
+    if (CurTok != ':')
+      return LogError(
+          "each `var` binding requires `: type` (strong typing); e.g. `var i:int = 0 in`");
 
-      Init = ParseExpression();
-      if (!Init)
-        return nullptr;
-    }
+    getNextToken();
+    KalType VTy{};
+    if (!consumeKalTypeKeyword(&VTy))
+      return LogError("expected int, double, or bool after ':'");
 
-    VarNames.push_back(std::make_pair(Name, std::move(Init)));
+    if (CurTok != '=')
+      return LogError(
+          "`var` requires `= initializer` — uninitialized declarations are not supported");
+
+    getNextToken();
+    auto Init = ParseExpression();
+    if (!Init)
+      return nullptr;
+
+    VarNames.emplace_back(std::move(Name), VTy, std::move(Init));
 
     // End of var list, exit loop.
     if (CurTok != ',')
@@ -295,13 +333,14 @@ static std::unique_ptr<ExprAST> ParsePrimary()
   case tok_identifier:
     return ParseIdentifierExpr();
   case tok_number:
+  case tok_int_lit:
     return ParseNumberExpr();
   case tok_true:
     getNextToken();
-    return std::make_unique<NumberExprAST>(1.0);
+    return std::make_unique<NumberExprAST>(1LL, 1.0);
   case tok_false:
     getNextToken();
-    return std::make_unique<NumberExprAST>(0.0);
+    return std::make_unique<NumberExprAST>(0LL, 0.0);
   case '(':
     return ParseParenExpr();
   case tok_if:
@@ -450,20 +489,74 @@ static std::unique_ptr<PrototypeAST> ParsePrototype()
   if (CurTok != '(')
     return LogErrorP("Expected '(' in prototype");
 
-  std::vector<std::string> ArgNames;
-  while (getNextToken() == tok_identifier)
-    ArgNames.push_back(IdentifierStr);
+  getNextToken(); // eat '('.
+
+  if (Kind)
+  {
+    std::vector<std::pair<std::string, KalType>> OpArgs;
+    if (CurTok != ')')
+    {
+      while (true)
+      {
+        if (CurTok != tok_identifier)
+          return LogErrorP("Expected identifier in operator prototype");
+        std::string ArgN = IdentifierStr;
+        getNextToken();
+        if (CurTok != ':')
+          return LogErrorP(
+              "each operator parameter requires `: double` (e.g. unary -(x:double))");
+        getNextToken();
+        KalType ATy{};
+        if (!consumeKalTypeKeyword(&ATy))
+          return LogErrorP("Expected int, double, or bool after ':'");
+        if (ATy != KalType::Double)
+          return LogErrorP(
+              "custom unary/binary operators currently only support `double` operands");
+        OpArgs.emplace_back(std::move(ArgN), ATy);
+        if (CurTok == ')')
+          break;
+        if (CurTok != ',')
+          return LogErrorP("Expected ',' or ')' in operator prototype");
+        getNextToken();
+      }
+    }
+    if (CurTok != ')')
+      return LogErrorP("Expected ')' in prototype");
+    getNextToken();
+
+    if (OpArgs.size() != Kind)
+      return LogErrorP("Invalid number of operands for operator");
+
+    return std::make_unique<PrototypeAST>(FnName, std::move(OpArgs),
+                                          Kind != 0, BinaryPrecedence);
+  }
+
+  std::vector<std::pair<std::string, KalType>> ArgInfos;
+  if (CurTok != ')')
+  {
+    while (true)
+    {
+      if (CurTok != tok_identifier)
+        return LogErrorP("Expected identifier in prototype");
+      std::string ArgN = IdentifierStr;
+      getNextToken();
+      if (CurTok != ':')
+        return LogErrorP(
+            "each parameter requires `: type` — e.g. `def f(x:double y:int)`");
+      getNextToken();
+      KalType ATy{};
+      if (!consumeKalTypeKeyword(&ATy))
+        return LogErrorP("Expected int, double, or bool after ':'");
+      ArgInfos.emplace_back(std::move(ArgN), ATy);
+      if (CurTok == ')')
+        break;
+    }
+  }
   if (CurTok != ')')
     return LogErrorP("Expected ')' in prototype");
+  getNextToken();
 
-  // success.
-  getNextToken(); // eat ')'.
-
-  // Verify right number of names for operator.
-  if (Kind && ArgNames.size() != Kind)
-    return LogErrorP("Invalid number of operands for operator");
-
-  return std::make_unique<PrototypeAST>(FnName, ArgNames, Kind != 0,
+  return std::make_unique<PrototypeAST>(FnName, std::move(ArgInfos), false,
                                         BinaryPrecedence);
 }
 
@@ -486,8 +579,8 @@ std::unique_ptr<FunctionAST> ParseTopLevelExpr()
   if (auto E = ParseExpression())
   {
     // Make an anonymous proto.
-    auto Proto = std::make_unique<PrototypeAST>("__anon_expr",
-                                                std::vector<std::string>());
+    auto Proto = std::make_unique<PrototypeAST>(
+        "__anon_expr", std::vector<std::pair<std::string, KalType>>{}, false, 0);
     return std::make_unique<FunctionAST>(std::move(Proto), std::move(E));
   }
   return nullptr;

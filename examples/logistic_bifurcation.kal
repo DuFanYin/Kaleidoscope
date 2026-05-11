@@ -1,0 +1,37 @@
+extern printd(x:double);
+
+def clamp01(x:double)
+    if x < 0 then 0 else if 1 < x then 1 else x;
+
+def step(x:double r:double) r * x * (1 - x);
+
+def stepBounded(x:double r:double) clamp01(step(x, r));
+
+def settle(seed:double r:double depth:double)
+    if depth < 0.5 then seed
+    else settle(stepBounded(seed, r), r, depth - 1);
+
+def sweepSeeds(r:double)
+    for s = 1, s < 7, 1 in printd(settle(s * 0.01 + 0.02, r, 160));
+
+def sweepRates()
+    for k = 0, k < 18, 1 in sweepSeeds(3 + k * 0.03);
+
+def sweepSeedsDeep(r:double)
+    for s = 1, s < 7, 1 in printd(settle(s * 0.01 + 0.02, r, 240));
+
+def sweepRatesDeep()
+    for k = 0, k < 14, 1 in sweepSeedsDeep(3.15 + k * 0.035);
+
+def tailSpread(r:double a:double b:double c:double)
+    settle(a, r, 120)
+    - settle(b, r, 120)
+    + (settle(c, r, 120) - settle(a, r, 120)) * 0.5;
+
+printd(settle(0.2, 3.2, 160));
+printd(settle(0.2, 3.55, 160));
+printd(settle(0.2, 3.82, 160));
+printd(tailSpread(3.6, 0.1, 0.5, 0.9));
+printd(tailSpread(3.85, 0.05, 0.5, 0.95));
+sweepRates();
+sweepRatesDeep();

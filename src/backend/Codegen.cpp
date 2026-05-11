@@ -1,10 +1,12 @@
 #include "frontend/AST.h"
+#include "frontend/Types.h"
 #include "backend/Codegen.h"
 #include "backend/JIT.h"
 #include "frontend/Parser.h"
 #include "backend/passes/Passes.h"
 
 #include "llvm/ADT/APFloat.h"
+#include "llvm/ADT/APInt.h"
 #include "llvm/IR/BasicBlock.h"
 #include "llvm/IR/Constants.h"
 #include "llvm/IR/DerivedTypes.h"
@@ -27,6 +29,7 @@
 
 #include "llvm/IR/CFG.h"
 
+#include <cassert>
 #include <vector>
 
 using namespace llvm;
@@ -47,6 +50,10 @@ std::unique_ptr<LoopAnalysisManager> TheLAM;
 std::unique_ptr<FunctionAnalysisManager> TheFAM;
 std::unique_ptr<FunctionPassManager> OptFunctionPasses;
 std::map<std::string, AllocaInst *> NamedValues;
+std::map<std::string, KalType> NamedVarTypes;
+/// When true, codegen uses IEEE double arithmetic (possibly mixed i32 locals).
+/// When false, pure i32 arithmetic and conditions.
+static bool CurFnUsesFloat = true;
 std::map<std::string, std::unique_ptr<PrototypeAST>> FunctionProtos;
 
 //===----------------------------------------------------------------------===//
@@ -101,32 +108,89 @@ Function *getFunction(std::string Name)
 
 /// CreateEntryBlockAlloca - Create an alloca instruction in the entry block of
 /// the function.  This is used for mutable variables etc.
-static AllocaInst *CreateEntryBlockAlloca(Function *TheFunction,
-                                          StringRef VarName)
+static AllocaInst *CreateEntryBlockAllocaTyped(Function *TheFunction,
+                                               StringRef VarName, KalType T)
 {
   IRBuilder<> TmpB(&TheFunction->getEntryBlock(),
                    TheFunction->getEntryBlock().begin());
-  return TmpB.CreateAlloca(Type::getDoubleTy(*TheContext), nullptr, VarName);
+  return TmpB.CreateAlloca(llvmTypeForKal(T, *TheContext), nullptr, VarName);
 }
+
+static Value *literalZeroForFn()
+{
+  if (CurFnUsesFloat)
+    return ConstantFP::get(*TheContext, APFloat(0.0));
+  return ConstantInt::get(Type::getInt32Ty(*TheContext), 0);
+}
+
+/// Coerce Value V to elemental type SlotTy for store.
+static Value *coerceForStore(Value *V, Type *SlotTy)
+{
+  if (V->getType() == SlotTy)
+    return V;
+  if (SlotTy->isDoubleTy() && V->getType()->isIntegerTy(32))
+    return Builder->CreateSIToFP(V, SlotTy);
+  if (SlotTy->isIntegerTy(32) && V->getType()->isDoubleTy())
+    return Builder->CreateFPToSI(V, SlotTy);
+  (void)LogErrorV("internal: cannot coerce types for assignment");
+  return nullptr;
+}
+
+static Value *coerceForCall(Value *V, KalType ParmTy)
+{
+  return coerceForStore(V, llvmTypeForKal(ParmTy, *TheContext));
+}
+
+/// Ensure return value matches the function's LLVM return type.
+static Value *coerceForReturn(Value *V, KalType RetTy)
+{
+  Type *Want = llvmTypeForKal(RetTy, *TheContext);
+  if (V->getType() == Want)
+    return V;
+  if (Want->isDoubleTy() && V->getType()->isIntegerTy(32))
+    return Builder->CreateSIToFP(V, Want);
+  if (Want->isIntegerTy(32) && V->getType()->isDoubleTy())
+    return Builder->CreateFPToSI(V, Want);
+  (void)LogErrorV("internal: cannot coerce return type");
+  return nullptr;
+}
+
 
 Value *NumberExprAST::codegen()
 {
+  if (!CurFnUsesFloat)
+  {
+    if (!IsIntegral)
+      return LogErrorV(
+          "floating-point literal not allowed in int-only function — use "
+          "integer literals (no `.`) or true/false");
+    return ConstantInt::get(Type::getInt32Ty(*TheContext), APInt(32, IntVal, true));
+  }
   return ConstantFP::get(*TheContext, APFloat(Val));
 }
 
 Value *VariableExprAST::codegen()
 {
-  // Look this variable up in the function.
-  Value *V = NamedValues[Name];
-  if (!V)
+  Value *VP = NamedValues[Name];
+  if (!VP)
     return LogErrorV("Unknown variable name");
 
-  // Load the value.
-  return Builder->CreateLoad(Type::getDoubleTy(*TheContext), V, Name.c_str());
+  auto ItTy = NamedVarTypes.find(Name);
+  KalType Ty = ItTy == NamedVarTypes.end() ? KalType::Double : ItTy->second;
+  Type *ElemTy = llvmTypeForKal(Ty, *TheContext);
+  Value *Loaded =
+      Builder->CreateLoad(ElemTy, VP, Name.c_str());
+  if (CurFnUsesFloat && isIntegerLike(Ty))
+    return Builder->CreateSIToFP(
+        Loaded, Type::getDoubleTy(*TheContext), "itof");
+  return Loaded;
 }
 
 Value *UnaryExprAST::codegen()
 {
+  if (!CurFnUsesFloat)
+    return LogErrorV("unary ops are only supported when using double arithmetic");
+
   Value *OperandV = Operand->codegen();
   if (!OperandV)
     return nullptr;
@@ -142,9 +206,17 @@ Value *NotExprAST::codegen() {
   Value *V = Operand->codegen();
   if (!V)
     return nullptr;
-  Value *Zero = ConstantFP::get(*TheContext, APFloat(0.0));
-  Value *IsZero = Builder->CreateFCmpOEQ(V, Zero, "notcmp");
-  return Builder->CreateUIToFP(IsZero, Type::getDoubleTy(*TheContext), "notdbl");
+
+  if (CurFnUsesFloat)
+  {
+    Value *Zero = ConstantFP::get(*TheContext, APFloat(0.0));
+    Value *IsZero = Builder->CreateFCmpOEQ(V, Zero, "notcmp");
+    return Builder->CreateUIToFP(IsZero, Type::getDoubleTy(*TheContext), "notdbl");
+  }
+
+  Value *ZeroI = ConstantInt::get(Type::getInt32Ty(*TheContext), 0);
+  Value *IsZero = Builder->CreateICmpEQ(V, ZeroI, "noticmp");
+  return Builder->CreateZExt(IsZero, Type::getInt32Ty(*TheContext), "not32");
 }
 
 Value *BreakExprAST::codegen() {
@@ -152,7 +224,7 @@ Value *BreakExprAST::codegen() {
     return LogErrorV("break outside loop");
   Builder->CreateBr(LoopStack.back().BreakDest);
   ActiveLoopControl = CFGTokenKind::Break;
-  return ConstantFP::get(*TheContext, APFloat(0.0));
+  return literalZeroForFn();
 }
 
 Value *ContinueExprAST::codegen() {
@@ -160,10 +232,46 @@ Value *ContinueExprAST::codegen() {
     return LogErrorV("continue outside loop");
   Builder->CreateBr(LoopStack.back().ContinueDest);
   ActiveLoopControl = CFGTokenKind::Continue;
-  return ConstantFP::get(*TheContext, APFloat(0.0));
+  return literalZeroForFn();
 }
 
 Value *LogicalAndExprAST::codegen() {
+  if (!CurFnUsesFloat)
+  {
+    Function *TheFunction = Builder->GetInsertBlock()->getParent();
+    Value *L = LHS->codegen();
+    if (!L)
+      return nullptr;
+    Value *Zero = ConstantInt::get(Type::getInt32Ty(*TheContext), 0);
+
+    BasicBlock *RhsBB =
+        BasicBlock::Create(*TheContext, "land.rhs.i", TheFunction);
+    BasicBlock *MergeBB =
+        BasicBlock::Create(*TheContext, "land.end.i", TheFunction);
+    BasicBlock *LHSEnd = Builder->GetInsertBlock();
+
+    Value *Ltruth =
+        Builder->CreateICmpNE(L, Zero, "land.icmp lhs");
+    Builder->CreateCondBr(Ltruth, RhsBB, MergeBB);
+
+    Builder->SetInsertPoint(RhsBB);
+    Value *R = RHS->codegen();
+    if (!R)
+      return nullptr;
+    Value *Rtruth =
+        Builder->CreateICmpNE(R, Zero, "land.icmp rhs");
+    Value * Rz = Builder->CreateZExt(
+        Rtruth, Type::getInt32Ty(*TheContext), "land32rhs");
+    Builder->CreateBr(MergeBB);
+    BasicBlock *RhsEnd = Builder->GetInsertBlock();
+
+    Builder->SetInsertPoint(MergeBB);
+    PHINode *PN = Builder->CreatePHI(Type::getInt32Ty(*TheContext), 2, "landphi.i");
+    PN->addIncoming(Zero, LHSEnd);
+    PN->addIncoming(Rz, RhsEnd);
+    return PN;
+  }
+
   Function *TheFunction = Builder->GetInsertBlock()->getParent();
   Value *L = LHS->codegen();
   if (!L)
@@ -197,6 +305,49 @@ Value *LogicalAndExprAST::codegen() {
 
 Value *LogicalOrExprAST::codegen() {
   Function *TheFunction = Builder->GetInsertBlock()->getParent();
+
+  if (!CurFnUsesFloat)
+  {
+    Value *L = LHS->codegen();
+    if (!L)
+      return nullptr;
+    Value *Zero = ConstantInt::get(Type::getInt32Ty(*TheContext), 0);
+
+    BasicBlock *TrueBB =
+        BasicBlock::Create(*TheContext, "lor.true.i", TheFunction);
+    BasicBlock *RhsBB =
+        BasicBlock::Create(*TheContext, "lor.rhs.i", TheFunction);
+    BasicBlock *MergeBB =
+        BasicBlock::Create(*TheContext, "lor.end.i", TheFunction);
+
+    Value *Ltruth =
+        Builder->CreateICmpNE(L, Zero, "lor.icmp lhs");
+    Builder->CreateCondBr(Ltruth, TrueBB, RhsBB);
+
+    Builder->SetInsertPoint(TrueBB);
+    Value *One =
+        ConstantInt::get(Type::getInt32Ty(*TheContext), 1);
+    Builder->CreateBr(MergeBB);
+    BasicBlock *TrueEnd = Builder->GetInsertBlock();
+
+    Builder->SetInsertPoint(RhsBB);
+    Value *R = RHS->codegen();
+    if (!R)
+      return nullptr;
+    Value *Rtruth =
+        Builder->CreateICmpNE(R, Zero, "lor.icmp rhs");
+    Value *Rz =
+        Builder->CreateZExt(Rtruth, Type::getInt32Ty(*TheContext), "lor32rhs");
+    Builder->CreateBr(MergeBB);
+    BasicBlock *RhsEnd = Builder->GetInsertBlock();
+
+    Builder->SetInsertPoint(MergeBB);
+    PHINode *PN = Builder->CreatePHI(Type::getInt32Ty(*TheContext), 2, "lorphi.i");
+    PN->addIncoming(One, TrueEnd);
+    PN->addIncoming(Rz, RhsEnd);
+    return PN;
+  }
+
   Value *L = LHS->codegen();
   if (!L)
     return nullptr;
@@ -237,25 +388,27 @@ Value *BinaryExprAST::codegen()
   // Special case '=' because we don't want to emit the LHS as an expression.
   if (Op == '=')
   {
-    // Assignment requires the LHS to be an identifier.
-    // This assume we're building without RTTI because LLVM builds that way by
-    // default.  If you build LLVM with RTTI this can be changed to a
-    // dynamic_cast for automatic error checking.
     VariableExprAST *LHSE = static_cast<VariableExprAST *>(LHS.get());
     if (!LHSE)
       return LogErrorV("destination of '=' must be a variable");
-    // Codegen the RHS.
     Value *Val = RHS->codegen();
     if (!Val)
       return nullptr;
 
-    // Look up the name.
     Value *Variable = NamedValues[LHSE->getName()];
     if (!Variable)
       return LogErrorV("Unknown variable name");
 
-    Builder->CreateStore(Val, Variable);
-    return Val;
+    KalType DstTy = KalType::Double;
+    if (auto It = NamedVarTypes.find(LHSE->getName()); It != NamedVarTypes.end())
+      DstTy = It->second;
+
+    Type *SlotTy = llvmTypeForKal(DstTy, *TheContext);
+    auto *Coerced = coerceForStore(Val, SlotTy);
+    if (!Coerced)
+      return nullptr;
+    Builder->CreateStore(Coerced, Variable);
+    return Coerced;
   }
 
   Value *L = LHS->codegen();
@@ -263,48 +416,81 @@ Value *BinaryExprAST::codegen()
   if (!L || !R)
     return nullptr;
 
+  if (CurFnUsesFloat)
+  {
+    switch (Op)
+    {
+    case '+':
+      return Builder->CreateFAdd(L, R, "addtmp");
+    case '-':
+      return Builder->CreateFSub(L, R, "subtmp");
+    case '*':
+      return Builder->CreateFMul(L, R, "multmp");
+    case '/':
+      return Builder->CreateFDiv(L, R, "divtmp");
+    case '<': {
+      Value *C = Builder->CreateFCmpULT(L, R, "cmptmp");
+      return Builder->CreateUIToFP(C, Type::getDoubleTy(*TheContext), "booltmp");
+    }
+    default:
+      break;
+    }
+    Function *F = getFunction(std::string("binary") + Op);
+    assert(F && "binary operator not found!");
+    Value *Ops[] = {L, R};
+    return Builder->CreateCall(F, Ops, "binop");
+  }
+
   switch (Op)
   {
   case '+':
-    return Builder->CreateFAdd(L, R, "addtmp");
+    return Builder->CreateNSWAdd(L, R, "iadd");
   case '-':
-    return Builder->CreateFSub(L, R, "subtmp");
+    return Builder->CreateNSWSub(L, R, "isub");
   case '*':
-    return Builder->CreateFMul(L, R, "multmp");
-  case '<':
-    L = Builder->CreateFCmpULT(L, R, "cmptmp");
-    // Convert bool 0/1 to double 0.0 or 1.0
-    return Builder->CreateUIToFP(L, Type::getDoubleTy(*TheContext), "booltmp");
+    return Builder->CreateNSWMul(L, R, "imul");
+  case '/':
+    return Builder->CreateSDiv(L, R, "idiv");
+  case '<': {
+    Value *Cmp = Builder->CreateICmpSLT(L, R, "icmp");
+    return Builder->CreateZExt(Cmp, Type::getInt32Ty(*TheContext), "icmp32");
+  }
   default:
     break;
   }
 
-  // If it wasn't a builtin binary operator, it must be a user defined one. Emit
-  // a call to it.
   Function *F = getFunction(std::string("binary") + Op);
-  assert(F && "binary operator not found!");
-
+  if (!F)
+    return LogErrorV("binary operator not found!");
   Value *Ops[] = {L, R};
-  return Builder->CreateCall(F, Ops, "binop");
+  return Builder->CreateCall(F, Ops, "binopi");
 }
 
 Value *CallExprAST::codegen()
 {
-  // Look up the name in the global module table.
   Function *CalleeF = getFunction(Callee);
   if (!CalleeF)
     return LogErrorV("Unknown function referenced");
 
-  // If argument mismatch error.
   if (CalleeF->arg_size() != Args.size())
     return LogErrorV("Incorrect # arguments passed");
 
   std::vector<Value *> ArgsV;
   for (unsigned i = 0, e = Args.size(); i != e; ++i)
   {
-    ArgsV.push_back(Args[i]->codegen());
-    if (!ArgsV.back())
+    KalType Pt = KalType::Double;
+    if (auto FI = FunctionProtos.find(Callee); FI != FunctionProtos.end())
+    {
+      if (i < FI->second->getArgCount())
+        Pt = FI->second->getArgType(i);
+    }
+    Value *AV = Args[i]->codegen();
+    if (!AV)
       return nullptr;
+    AV = coerceForCall(AV, Pt);
+    if (!AV)
+      return nullptr;
+    ArgsV.push_back(AV);
   }
 
   return Builder->CreateCall(CalleeF, ArgsV, "calltmp");
@@ -316,8 +502,16 @@ Value *IfExprAST::codegen()
   if (!CondV)
     return nullptr;
 
-  CondV = Builder->CreateFCmpONE(
-      CondV, ConstantFP::get(*TheContext, APFloat(0.0)), "ifcond");
+  Type *AggTy =
+      CurFnUsesFloat ? Type::getDoubleTy(*TheContext)
+                     : Type::getInt32Ty(*TheContext);
+  Value *CondBr =
+      CurFnUsesFloat
+          ? Builder->CreateFCmpONE(
+                CondV, ConstantFP::get(*TheContext, APFloat(0.0)), "ifcond")
+          : Builder->CreateICmpNE(
+                CondV, ConstantInt::get(Type::getInt32Ty(*TheContext), 0),
+                "ificmp");
 
   Function *TheFunction = Builder->GetInsertBlock()->getParent();
 
@@ -325,7 +519,7 @@ Value *IfExprAST::codegen()
   BasicBlock *ElseBB = BasicBlock::Create(*TheContext, "else", TheFunction);
   BasicBlock *MergeBB = BasicBlock::Create(*TheContext, "ifcont", TheFunction);
 
-  Builder->CreateCondBr(CondV, ThenBB, ElseBB);
+  Builder->CreateCondBr(CondBr, ThenBB, ElseBB);
 
   Builder->SetInsertPoint(ThenBB);
 
@@ -355,12 +549,12 @@ Value *IfExprAST::codegen()
 
   Builder->SetInsertPoint(MergeBB);
   if (Incomings.empty())
-    return ConstantFP::get(*TheContext, APFloat(0.0));
+    return literalZeroForFn();
   if (Incomings.size() == 1)
     return Incomings[0].first;
 
   PHINode *PN =
-      Builder->CreatePHI(Type::getDoubleTy(*TheContext), Incomings.size(), "iftmp");
+      Builder->CreatePHI(AggTy, Incomings.size(), "iftmp");
   for (auto &Incoming : Incomings)
     PN->addIncoming(Incoming.first, Incoming.second);
   return PN;
@@ -389,9 +583,16 @@ Value *ForExprAST::codegen()
 {
   Function *TheFunction = Builder->GetInsertBlock()->getParent();
 
-  AllocaInst *Alloca = CreateEntryBlockAlloca(TheFunction, VarName);
+  KalType LoopVarTy =
+      CurFnUsesFloat ? KalType::Double : KalType::Int32;
+  Type *LoopEltTy = llvmTypeForKal(LoopVarTy, *TheContext);
+  AllocaInst *Alloca =
+      CreateEntryBlockAllocaTyped(TheFunction, VarName, LoopVarTy);
 
   Value *StartVal = Start->codegen();
+  if (!StartVal)
+    return nullptr;
+  StartVal = coerceForStore(StartVal, LoopEltTy);
   if (!StartVal)
     return nullptr;
 
@@ -406,26 +607,36 @@ Value *ForExprAST::codegen()
   LoopTargets LTargets{StepBB, AfterBB};
   LoopStack.push_back(LTargets);
 
-  AllocaInst *OldVal = NamedValues[VarName];
+  AllocaInst *OldVal = NamedValues.count(VarName) ? NamedValues[VarName] : nullptr;
+  bool HadOldTy = NamedVarTypes.count(VarName);
+  KalType OldTyStored = HadOldTy ? NamedVarTypes[VarName] : KalType::Double;
+
+  NamedVarTypes[VarName] = LoopVarTy;
   NamedValues[VarName] = Alloca;
+
+  auto restoreLoopVarBinding = [&]()
+  {
+    if (OldVal)
+      NamedValues[VarName] = OldVal;
+    else
+      NamedValues.erase(VarName);
+    if (HadOldTy)
+      NamedVarTypes[VarName] = OldTyStored;
+    else
+      NamedVarTypes.erase(VarName);
+  };
 
   Builder->SetInsertPoint(BodyBB);
   ActiveLoopControl = CFGTokenKind::None;
 
   if (!Body->codegen()) {
-    if (OldVal)
-      NamedValues[VarName] = OldVal;
-    else
-      NamedValues.erase(VarName);
+    restoreLoopVarBinding();
     LoopStack.pop_back();
     return nullptr;
   }
 
   ActiveLoopControl = CFGTokenKind::None;
 
-  // If the body ends on a merge block (e.g. if/else where else breaks), that
-  // block still needs a successor; break/continue already set a terminator on
-  // their own blocks.
   if (!Builder->GetInsertBlock()->getTerminator())
     Builder->CreateBr(StepBB);
 
@@ -437,50 +648,61 @@ Value *ForExprAST::codegen()
     StepVal = Step->codegen();
     if (!StepVal)
     {
-      if (OldVal)
-        NamedValues[VarName] = OldVal;
-      else
-        NamedValues.erase(VarName);
+      restoreLoopVarBinding();
+      LoopStack.pop_back();
+      return nullptr;
+    }
+    StepVal = coerceForStore(StepVal, LoopEltTy);
+    if (!StepVal)
+    {
+      restoreLoopVarBinding();
       LoopStack.pop_back();
       return nullptr;
     }
   }
   else
   {
-    StepVal = ConstantFP::get(*TheContext, APFloat(1.0));
+    if (LoopEltTy->isDoubleTy())
+      StepVal = ConstantFP::get(*TheContext, APFloat(1.0));
+    else
+      StepVal = ConstantInt::get(Type::getInt32Ty(*TheContext), 1);
   }
 
   Value *EndCond = End->codegen();
   if (!EndCond)
   {
-    if (OldVal)
-      NamedValues[VarName] = OldVal;
-    else
-      NamedValues.erase(VarName);
+    restoreLoopVarBinding();
     LoopStack.pop_back();
     return nullptr;
   }
 
-  Value *CurVar = Builder->CreateLoad(Type::getDoubleTy(*TheContext), Alloca,
-                                      VarName.c_str());
-  Value *NextVar = Builder->CreateFAdd(CurVar, StepVal, "nextvar");
+  Value *CurVar = Builder->CreateLoad(LoopEltTy, Alloca, VarName.c_str());
+  Value *NextVar =
+      LoopEltTy->isDoubleTy()
+          ? Builder->CreateFAdd(CurVar, StepVal, "nextvar")
+          : Builder->CreateNSWAdd(CurVar, StepVal, "nextvar.i");
+
   Builder->CreateStore(NextVar, Alloca);
 
-  EndCond = Builder->CreateFCmpONE(
-      EndCond, ConstantFP::get(*TheContext, APFloat(0.0)), "loopcond");
+  EndCond =
+      CurFnUsesFloat
+          ? Builder->CreateFCmpONE(
+                EndCond, ConstantFP::get(*TheContext, APFloat(0.0)),
+                "loopcond")
+          : Builder->CreateICmpNE(
+                EndCond,
+                ConstantInt::get(Type::getInt32Ty(*TheContext), 0),
+                "loopcond.i");
 
   Builder->CreateCondBr(EndCond, BodyBB, AfterBB);
 
   LoopStack.pop_back();
 
-  if (OldVal)
-    NamedValues[VarName] = OldVal;
-  else
-    NamedValues.erase(VarName);
+  restoreLoopVarBinding();
 
   Builder->SetInsertPoint(AfterBB);
 
-  return Constant::getNullValue(Type::getDoubleTy(*TheContext));
+  return literalZeroForFn();
 }
 
 Value *WhileExprAST::codegen()
@@ -497,8 +719,15 @@ Value *WhileExprAST::codegen()
   Value *CondV = Cond->codegen();
   if (!CondV)
     return nullptr;
-  CondV = Builder->CreateFCmpONE(
-      CondV, ConstantFP::get(*TheContext, APFloat(0.0)), "whilecond");
+  CondV =
+      CurFnUsesFloat
+          ? Builder->CreateFCmpONE(
+                CondV, ConstantFP::get(*TheContext, APFloat(0.0)),
+                "whilecond")
+          : Builder->CreateICmpNE(
+                CondV,
+                ConstantInt::get(Type::getInt32Ty(*TheContext), 0),
+                "whilecond.i");
   Builder->CreateCondBr(CondV, LoopBB, AfterBB);
 
   LoopStack.push_back({CondBB, AfterBB});
@@ -518,76 +747,93 @@ Value *WhileExprAST::codegen()
   LoopStack.pop_back();
 
   Builder->SetInsertPoint(AfterBB);
-  return Constant::getNullValue(Type::getDoubleTy(*TheContext));
+  return literalZeroForFn();
 }
 
 Value *VarExprAST::codegen()
 {
-  std::vector<AllocaInst *> OldBindings;
+  struct OldBind {
+    AllocaInst *Ptr;
+    KalType Ty;
+    bool HadTy;
+  };
+  std::vector<OldBind> OldBindings;
+  OldBindings.reserve(VarNames.size());
 
   Function *TheFunction = Builder->GetInsertBlock()->getParent();
 
-  // Register all variables and emit their initializer.
   for (unsigned i = 0, e = VarNames.size(); i < e; ++i)
   {
-    const std::string &VarName = VarNames[i].first;
-    ExprAST *Init = VarNames[i].second.get();
+    const auto &VN = VarNames[i];
+    const std::string &VarName = std::get<0>(VN);
+    KalType VTy = std::get<1>(VN);
+    ExprAST *Init = std::get<2>(VN).get();
 
-    // Emit the initializer before adding the variable to scope, this prevents
-    // the initializer from referencing the variable itself, and permits stuff
-    // like this:
-    //  var a = 1 in
-    //    var a = a in ...   # refers to outer 'a'.
-    Value *InitVal;
-    if (Init)
+    OldBind OB{nullptr, KalType::Double, false};
+    if (auto It = NamedValues.find(VarName); It != NamedValues.end())
+      OB.Ptr = It->second;
+    if (auto It = NamedVarTypes.find(VarName); It != NamedVarTypes.end())
     {
-      InitVal = Init->codegen();
-      if (!InitVal)
-        return nullptr;
+      OB.Ty = It->second;
+      OB.HadTy = true;
     }
-    else
-    { // If not specified, use 0.0.
-      InitVal = ConstantFP::get(*TheContext, APFloat(0.0));
-    }
+    OldBindings.push_back(OB);
 
-    AllocaInst *Alloca = CreateEntryBlockAlloca(TheFunction, VarName);
+    assert(Init != nullptr &&
+           "`var` must have been parsed with `= initializer`");
+    Value *InitVal = Init->codegen();
+    if (!InitVal)
+      return nullptr;
+
+    Type *SlotTy = llvmTypeForKal(VTy, *TheContext);
+    InitVal = coerceForStore(InitVal, SlotTy);
+    if (!InitVal)
+      return nullptr;
+
+    AllocaInst *Alloca = CreateEntryBlockAllocaTyped(TheFunction, VarName, VTy);
     Builder->CreateStore(InitVal, Alloca);
 
-    // Remember the old variable binding so that we can restore the binding when
-    // we unrecurse.
-    OldBindings.push_back(NamedValues[VarName]);
-
-    // Remember this binding.
     NamedValues[VarName] = Alloca;
+    NamedVarTypes[VarName] = VTy;
   }
 
-  // Codegen the body, now that all vars are in scope.
   Value *BodyVal = Body->codegen();
   if (!BodyVal)
     return nullptr;
 
-  // Pop all our variables from scope.
   for (unsigned i = 0, e = VarNames.size(); i < e; ++i)
-    NamedValues[VarNames[i].first] = OldBindings[i];
+  {
+    const std::string &VarName = std::get<0>(VarNames[i]);
+    OldBind OB = OldBindings[i];
+    if (!OB.Ptr)
+      NamedValues.erase(VarName);
+    else
+      NamedValues[VarName] = OB.Ptr;
+    if (OB.HadTy)
+      NamedVarTypes[VarName] = OB.Ty;
+    else
+      NamedVarTypes.erase(VarName);
+  }
 
-  // Return the body computation.
   return BodyVal;
 }
 
 Function *PrototypeAST::codegen()
 {
-  // Make the function type:  double(double,double) etc.
-  std::vector<Type *> Doubles(Args.size(), Type::getDoubleTy(*TheContext));
+  std::vector<Type *> ParamTys;
+  ParamTys.reserve(Args.size());
+  for (const auto &A : Args)
+    ParamTys.push_back(llvmTypeForKal(A.second, *TheContext));
+
   FunctionType *FT =
-      FunctionType::get(Type::getDoubleTy(*TheContext), Doubles, false);
+      FunctionType::get(llvmTypeForKal(RetTy, *TheContext), ParamTys, false);
 
   Function *F =
       Function::Create(FT, Function::ExternalLinkage, Name, TheModule.get());
 
-  // Set names for all arguments.
   unsigned Idx = 0;
   for (auto &Arg : F->args())
-    Arg.setName(Args[Idx++]);
+    Arg.setName(Args[Idx++].first);
 
   return F;
 }
@@ -596,51 +842,57 @@ Function *FunctionAST::codegen()
 {
   clearCodegenLoopState();
 
-  // Transfer ownership of the prototype to the FunctionProtos map, but keep a
-  // reference to it for use below.
   auto &P = *Proto;
   FunctionProtos[Proto->getName()] = std::move(Proto);
   Function *TheFunction = getFunction(P.getName());
   if (!TheFunction)
     return nullptr;
 
-  // If this is an operator, install it.
   if (P.isBinaryOp())
     BinopPrecedence[P.getOperatorName()] = P.getBinaryPrecedence();
 
-  // Create a new basic block to start insertion into.
+  CurFnUsesFloat = (P.getReturnType() == KalType::Double);
+  unsigned na = P.getArgCount();
+
   BasicBlock *BB = BasicBlock::Create(*TheContext, "entry", TheFunction);
   Builder->SetInsertPoint(BB);
 
-  // Record the function arguments in the NamedValues map.
   NamedValues.clear();
+  NamedVarTypes.clear();
+
+  unsigned Idx = 0;
   for (auto &Arg : TheFunction->args())
   {
-    // Create an alloca for this variable.
-    AllocaInst *Alloca = CreateEntryBlockAlloca(TheFunction, Arg.getName());
+    KalType Ty = Idx < na ? P.getArgType(Idx) : KalType::Double;
+    std::string N = Arg.getName().str();
+    AllocaInst *Alloca = CreateEntryBlockAllocaTyped(TheFunction, N, Ty);
 
-    // Store the initial value into the alloca.
+    NamedVarTypes[N] = Ty;
+    NamedValues[N] = Alloca;
+
     Builder->CreateStore(&Arg, Alloca);
-
-    // Add arguments to variable symbol table.
-    NamedValues[std::string(Arg.getName())] = Alloca;
+    ++Idx;
   }
 
   if (Value *RetVal = Body->codegen())
   {
-    // Finish off the function.
-    Builder->CreateRet(RetVal);
+    Value *Adjusted = coerceForReturn(RetVal, P.getReturnType());
+    if (!Adjusted)
+    {
+      TheFunction->eraseFromParent();
+      if (P.isBinaryOp())
+        BinopPrecedence.erase(P.getOperatorName());
+      return nullptr;
+    }
+    Builder->CreateRet(Adjusted);
 
-    // Validate the generated code, checking for consistency.
     verifyFunction(*TheFunction);
 
-    // New PM: run scalar pipeline on this function (Mem2Reg + custom + LLVM passes).
     OptFunctionPasses->run(*TheFunction, *TheFAM);
 
     return TheFunction;
   }
 
-  // Error reading body, remove function.
   TheFunction->eraseFromParent();
 
   if (P.isBinaryOp())

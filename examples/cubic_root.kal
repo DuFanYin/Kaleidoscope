@@ -1,0 +1,36 @@
+extern printd(x:double);
+
+def f(x:double) x * x * x - 2 * x - 5;
+
+def fp(x:double) 3 * x * x - 2;
+
+def newtonStep(x:double) x - f(x) / fp(x);
+
+def newtonRefine(x0:double steps:double)
+    if steps < 0.5 then x0
+    else newtonRefine(newtonStep(x0), steps - 1);
+
+def dampedStep(x:double) x - 0.4 * (f(x) / fp(x));
+
+def dampedRefine(x0:double steps:double)
+    if steps < 0.5 then x0
+    else dampedRefine(dampedStep(x0), steps - 1);
+
+def bisectRoot(lo:double hi:double flo:double fhi:double eps:double)
+    if hi - lo < eps then (lo + hi) * 0.5
+    else
+        if flo * f((lo + hi) * 0.5) < 0
+        then bisectRoot(lo, (lo + hi) * 0.5, flo, f((lo + hi) * 0.5), eps)
+        else bisectRoot((lo + hi) * 0.5, hi, f((lo + hi) * 0.5), fhi, eps);
+
+def hybridSolve()
+    var x0:double = bisectRoot(2, 3, f(2), f(3), 0.00001) in
+        newtonRefine(dampedRefine(x0, 6), 8);
+
+printd(f(2));
+printd(f(3));
+printd(bisectRoot(2, 3, f(2), f(3), 0.00001));
+printd(newtonRefine(2.2, 12));
+printd(dampedRefine(2.2, 20));
+printd(hybridSolve());
+printd(f(hybridSolve()));

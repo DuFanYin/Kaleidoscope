@@ -1,9 +1,11 @@
 #pragma once
 
+#include "frontend/Types.h"
 #include "llvm/IR/Function.h"
 #include "llvm/IR/Value.h"
 
 #include <cassert>
+#include <cstdint>
 #include <memory>
 #include <string>
 #include <utility>
@@ -25,10 +27,16 @@ public:
 
 /// NumberExprAST - Expression class for numeric literals like "1.0".
 class NumberExprAST : public ExprAST {
-  double Val;
+  double Val{};
+  bool IsIntegral{};
+  std::int64_t IntVal{};
 
 public:
-  explicit NumberExprAST(double Val) : Val(Val) {}
+  explicit NumberExprAST(double Val)
+      : Val(Val), IsIntegral(false), IntVal(0) {}
+
+  NumberExprAST(std::int64_t I, double ValAsFp)
+      : Val(ValAsFp), IsIntegral(true), IntVal(I) {}
 
   llvm::Value *codegen() override;
 };
@@ -163,14 +171,15 @@ public:
   llvm::Value *codegen() override;
 };
 
-/// VarExprAST - Expression class for var/in
+/// VarExprAST - `var id:type = init (, ...)* in body` (parser enforces `:type` and `=`).
 class VarExprAST : public ExprAST {
-  std::vector<std::pair<std::string, std::unique_ptr<ExprAST>>> VarNames;
+  std::vector<std::tuple<std::string, KalType, std::unique_ptr<ExprAST>>> VarNames;
   std::unique_ptr<ExprAST> Body;
 
 public:
   VarExprAST(
-      std::vector<std::pair<std::string, std::unique_ptr<ExprAST>>> VarNames,
+      std::vector<std::tuple<std::string, KalType, std::unique_ptr<ExprAST>>>
+          VarNames,
       std::unique_ptr<ExprAST> Body)
       : VarNames(std::move(VarNames)), Body(std::move(Body)) {}
 
@@ -182,19 +191,24 @@ public:
 /// of arguments the function takes), as well as if it is an operator.
 class PrototypeAST {
   std::string Name;
-  std::vector<std::string> Args;
+  std::vector<std::pair<std::string, KalType>> Args;
+  KalType RetTy{KalType::Double};
   bool IsOperator;
   unsigned Precedence; // Precedence if a binary op.
 
+  void inferReturnType();
+
 public:
-  PrototypeAST(const std::string &Name, std::vector<std::string> Args,
-               bool IsOperator = false, unsigned Prec = 0)
-      : Name(Name), Args(std::move(Args)), IsOperator(IsOperator),
-        Precedence(Prec) {}
+  PrototypeAST(const std::string &Name,
+               std::vector<std::pair<std::string, KalType>> Args,
+               bool IsOperator = false, unsigned Prec = 0);
 
   llvm::Function *codegen();
   const std::string &getName() const { return Name; }
   unsigned getArgCount() const { return static_cast<unsigned>(Args.size()); }
+  KalType getArgType(unsigned I) const { return Args[I].second; }
+  const std::string &getArgName(unsigned I) const { return Args[I].first; }
+  KalType getReturnType() const { return RetTy; }
 
   bool isUnaryOp() const { return IsOperator && Args.size() == 1; }
   bool isBinaryOp() const { return IsOperator && Args.size() == 2; }

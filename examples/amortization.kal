@@ -1,0 +1,67 @@
+extern printd(x:double);
+
+def applyMonth(bal:double mrate:double pmt:double) bal * (1 + mrate) - pmt;
+
+def effectiveMrate(bal:double original:double annual:double)
+    if (bal * 100) < (original * 65) then annual / 12
+    else annual / 12 + 0.00275;
+
+def afterMonths(
+    bal:double original:double annual:double pmt:double n:double)
+    if n < 0.5 then bal
+    else afterMonths(
+        applyMonth(bal, effectiveMrate(bal, original, annual), pmt),
+        original,
+        annual,
+        pmt,
+        n - 1);
+
+def stillOweAtHorizon(
+    principal:double annual:double pmt:double months:double)
+    afterMonths(principal, principal, annual, pmt, months);
+
+def monthsToPaidOrCap(
+    bal:double original:double annual:double pmt:double cap:double count:double)
+    if cap < count then count
+    else if bal < 1 then count
+    else monthsToPaidOrCap(
+        applyMonth(bal, effectiveMrate(bal, original, annual), pmt),
+        original,
+        annual,
+        pmt,
+        cap,
+        count + 1);
+
+def bisectMinPayment(
+    lo:double hi:double principal:double annual:double horizon:double eps:double)
+    if hi - lo < eps then (lo + hi) * 0.5
+    else
+        if stillOweAtHorizon(principal, annual, (lo + hi) * 0.5, horizon) < 1
+        then bisectMinPayment(
+            lo,
+            (lo + hi) * 0.5,
+            principal,
+            annual,
+            horizon,
+            eps)
+        else bisectMinPayment(
+            (lo + hi) * 0.5,
+            hi,
+            principal,
+            annual,
+            horizon,
+            eps);
+
+def minPaymentFor(
+    principal:double annual:double lo:double hi:double horizon:double eps:double)
+    bisectMinPayment(lo, hi, principal, annual, horizon, eps);
+
+def entry()
+    minPaymentFor(385000, 0.058, 600, 6500, 360, 0.2);
+
+printd(minPaymentFor(220000, 0.051, 400, 4800, 300, 0.25));
+printd(minPaymentFor(500000, 0.0625, 1500, 9000, 360, 0.2));
+printd(stillOweAtHorizon(385000, 0.058, 2400, 360));
+printd(monthsToPaidOrCap(385000, 385000, 0.058, 2600, 420, 0));
+printd(stillOweAtHorizon(385000, 0.058, entry(), 360));
+printd(entry());

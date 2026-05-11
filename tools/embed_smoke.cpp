@@ -7,7 +7,7 @@ int main() {
   using namespace kaleidoscope::embed;
   Options opt;
   opt.jit = true;
-  const char kal[] = "extern printd(x);\n"
+  const char kal[] = "extern printd(x:double);\n"
                      "printd(3+4);\n";
   Result r = compileFromSource(kal, opt);
   std::fprintf(stderr, "embed_smoke: %s\n", r.message.c_str());

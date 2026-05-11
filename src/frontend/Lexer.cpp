@@ -12,7 +12,8 @@ namespace kaleidoscope {
 //===----------------------------------------------------------------------===//
 
 std::string IdentifierStr; // Filled in if tok_identifier
-double NumVal;             // Filled in if tok_number
+double NumVal;              // Filled in if tok_number
+std::int64_t IntLitVal;    // Filled in if tok_int_lit
 
 namespace {
 
@@ -95,20 +96,52 @@ int gettok()
       return tok_or;
     if (IdentifierStr == "not")
       return tok_not;
+    if (IdentifierStr == "int")
+      return tok_kw_int;
+    if (IdentifierStr == "double")
+      return tok_kw_double;
+    if (IdentifierStr == "bool")
+      return tok_kw_bool;
     return tok_identifier;
   }
 
   if (isdigit(LastChar) || LastChar == '.')
-  { // Number: [0-9.]+
+  { // Number: integer literal or floating [0-9]+ ('.' [0-9]*)?
     std::string NumStr;
+    if (LastChar == '.')
+    {
+      NumStr += LastChar;
+      LastChar = readNextChar();
+      if (!isdigit(LastChar))
+        return '.'; // lone dot: unknown token
+      do
+      {
+        NumStr += LastChar;
+        LastChar = readNextChar();
+      } while (isdigit(LastChar));
+      NumVal = strtod(NumStr.c_str(), nullptr);
+      return tok_number;
+    }
     do
     {
       NumStr += LastChar;
       LastChar = readNextChar();
-    } while (isdigit(LastChar) || LastChar == '.');
-
-    NumVal = strtod(NumStr.c_str(), nullptr);
-    return tok_number;
+    } while (isdigit(LastChar));
+    if (LastChar == '.')
+    {
+      NumStr += LastChar;
+      LastChar = readNextChar();
+      while (isdigit(LastChar))
+      {
+        NumStr += LastChar;
+        LastChar = readNextChar();
+      }
+      NumVal = strtod(NumStr.c_str(), nullptr);
+      return tok_number;
+    }
+    IntLitVal = static_cast<std::int64_t>(strtoll(NumStr.c_str(), nullptr, 10));
+    NumVal = static_cast<double>(IntLitVal);
+    return tok_int_lit;
   }
 
   if (LastChar == '#')

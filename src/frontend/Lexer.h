@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstdint>
 #include <string>
 
 #include <string_view>
@@ -44,11 +45,19 @@ enum Token {
   tok_continue = -18,
   tok_and = -19,
   tok_or = -20,
-  tok_not = -21
+  tok_not = -21,
+
+  // built-in types
+  tok_kw_int = -22,
+  tok_kw_double = -23,
+  tok_kw_bool = -24,
+
+  tok_int_lit = -25,
 };
 
 extern std::string IdentifierStr; // Filled in if tok_identifier
 extern double NumVal;               // Filled in if tok_number
+extern std::int64_t IntLitVal;      // Filled in if tok_int_lit
 
 int gettok();
 

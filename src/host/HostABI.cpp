@@ -1,5 +1,6 @@
 #include "host/HostABI.h"
 #include "frontend/AST.h"
+#include "frontend/Types.h"
 
 #include "llvm/ADT/StringRef.h"
 
@@ -20,7 +21,11 @@ validateKalRtBuiltinPrototype(const PrototypeAST &proto) {
 
   if (proto.getArgCount() != 1)
     return std::string("kal_rt builtin ") + proto.getName() +
-           " must be declared as extern name(x) (exactly one double argument)";
+           " must have exactly one argument";
+
+  if (proto.getArgType(0) != KalType::Double)
+    return std::string("kal_rt builtin ") + proto.getName() +
+           " requires a single `double` parameter: `name(x:double)`";
 
   return std::nullopt;
 }
