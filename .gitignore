@@ -1,0 +1,31 @@
+# --- Build outputs ---
+/build/
+/kaleidoscope
+/toy
+*.o
+*.obj
+*.out
+*.bc
+*.ll
+
+# --- Debug symbols (macOS) ---
+*.dSYM/
+
+# --- Tooling caches ---
+.cache/
+
+
+# --- OS ---
+.DS_Store
+.AppleDouble
+.LSOverride
+Thumbs.db
+
+# --- Editors / IDEs ---
+.idea/
+*.swp
+*.swo
+*~
+
+# VS Code local settings
+.vscode/

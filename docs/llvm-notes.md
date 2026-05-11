@@ -33,9 +33,9 @@ We first define the AST class, the parser the turn the tokens into instances, re
 Helper Functions:  
 (We use CurTok and getNextToken() to update the token. Allows us to look one token ahead at what the lexer is returning. Every function in our parser will assume that CurTok is the current token that needs to be parsed.
 
-The LogError routines are simple helper routines that our parser will use to handle errors. The error recovery in our parser will not be the best and is not particular user-friendly, but it will be enough for our tutorial. These routines make it easier to handle errors in routines that have various return types: they always return null.)
+The LogError routines are simple helper routines that our parser will use to handle errors. The error recovery in our parser will not be the best and is not particular user-friendly, but it will be enough for our tutorial. These routines make it easier to handle errors in routines that have various return types: they always return null.)
 
-For each production in our grammar, we’ll define a function which parses that production.
+For each production in our grammar, we'll define a function which parses that production.
 
 Recursion is uesd by calling ParseExpression() which can call ParseParenExpr()). Keep each product simple. Note that parentheses do not cause construction of AST nodes themselves. The most important role of parentheses are to guide the parser and provide grouping. Once the parser constructs the AST, parentheses are not needed.
 
@@ -43,7 +43,7 @@ A ParsePrimary() function is used to wrap all other expression parsing functions
 
 Binary expression parsing is handled using  Operator-Precedence Parsing. Where a map is used to store operator precedence and used to guide recursion. A GetTokPrecedence() is used to check operator precedence. Operator precedence parsing considers this as a stream of primary expressions separated by binary operators.
 
-Function prototypes are used both for ‘extern’ function declarations as well as function body definitions.
+Function prototypes are used both for 'extern' function declarations as well as function body definitions.
 
 ### IR code generation
 
@@ -67,11 +67,11 @@ phi node selects the right version of the variable(ssa have versions) to use bas
 
 llvm requires all register value to be in SSA form.
 
-In LLVM, all memory accesses are explicit with load/store instructions, and it is carefully designed not to have (or need) an “address-of” operator. Stack variables work the same way, except that instead of being declared with global variable definitions, they are declared with the LLVM alloca instruction. using this technique we avoid the use phi node.
+In LLVM, all memory accesses are explicit with load/store instructions, and it is carefully designed not to have (or need) an "address-of" operator. Stack variables work the same way, except that instead of being declared with global variable definitions, they are declared with the LLVM alloca instruction. using this technique we avoid the use phi node.
 
-LLVM optimizer has a highly-tuned optimization pass named “mem2reg” that handles the high stack traffic, promoting allocas into SSA registers, inserting Phi nodes as appropriate. The mem2reg pass implements the standard “iterated dominance frontier” algorithm for constructing SSA form and has a number of optimizations that speed up (very common) degenerate cases.
+LLVM optimizer has a highly-tuned optimization pass named "mem2reg" that handles the high stack traffic, promoting allocas into SSA registers, inserting Phi nodes as appropriate. The mem2reg pass implements the standard "iterated dominance frontier" algorithm for constructing SSA form and has a number of optimizations that speed up (very common) degenerate cases.
 
-The symbol table is managed at code generation time by the ‘NamedValues’ map. This map currently keeps track of the LLVM “Value*” that holds the double value for the named variable. In order to support mutation, we need to change it so it holds the memory location of the variable in question.
+The symbol table is managed at code generation time by the 'NamedValues' map. This map currently keeps track of the LLVM "Value*" that holds the double value for the named variable. In order to support mutation, we need to change it so it holds the memory location of the variable in question.
 
 For each argument of the function, we make an alloca, store the input value to the function into the alloca, and register the alloca as the memory location for the argument. This method gets invoked by FunctionAST::codegen() right after it sets up the entry block for the function.
 
@@ -81,9 +81,8 @@ Optimizer reveives the IR produced by front end.
 
 Code optimiztion does not have to be inplemented in the AST. Because all calls to build LLVM IR go through the LLVM IR builder, and builder itself checkes optimization oppoturity.
 
-LLVM provides wide range of optimizations in the form of <b>Passes</b>. Developer can chooes the passed based on their needs.
+LLVM provides wide range of optimizations in the form of **Passes**. Developer can chooes the passed based on their needs.
 
-A <b>FunctionPassManager</b> is used to hold the passes we want to run. Passed are then added into the FunctionPassManager. A new FPM for each module we want to optimize. A function is used to initialise both the module and the FunctionPassManager.
+A **FunctionPassManager** is used to hold the passes we want to run. Passed are then added into the FunctionPassManager. A new FPM for each module we want to optimize. A function is used to initialise both the module and the FunctionPassManager.
 
 The FPM is used by running it after our newly created function is constructed (in FunctionAST::codegen()), but before it is returned to the client. Optimizes and updates the LLVM Function* in place
-
