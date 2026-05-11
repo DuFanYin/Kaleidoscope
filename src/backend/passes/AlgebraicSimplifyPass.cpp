@@ -1,4 +1,4 @@
-#include "Passes.h"
+#include "backend/passes/Passes.h"
 
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/IR/Constants.h"
@@ -22,8 +22,8 @@ static bool isOne(Value *V) {
 
 } // namespace
 
-PreservedAnalyses KaleidoscopeAlgebraicSimplifyPass::run(Function &F,
-                                                          FunctionAnalysisManager &) {
+PreservedAnalyses KaleidoscopeAlgebraicSimplifyPass::run(
+    Function &F, FunctionAnalysisManager &) {
   bool Changed = false;
 
   for (BasicBlock &BB : F) {

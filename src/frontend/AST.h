@@ -140,6 +140,7 @@ public:
 
   llvm::Function *codegen();
   const std::string &getName() const { return Name; }
+  unsigned getArgCount() const { return static_cast<unsigned>(Args.size()); }
 
   bool isUnaryOp() const { return IsOperator && Args.size() == 1; }
   bool isBinaryOp() const { return IsOperator && Args.size() == 2; }

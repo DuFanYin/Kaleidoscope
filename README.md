@@ -1,105 +1,42 @@
 # Kaleidoscope
 
-A small educational compiler for the **Kaleidoscope** language from the [LLVM “My First Language Frontend” tutorial](https://llvm.org/docs/tutorial/MyFirstLanguageFrontend/index.html). It lexes and parses input, builds an AST, and generates LLVM IR. **Two drivers:** by default it writes a native object file (`build/output.o`); with **`--jit`** it uses the tutorial Orc JIT to run top-level expressions in process (no `output.o` in that run).
+个人学习用的 **Kaleidoscope** 小型编译器，跟 LLVM 官方教程 [*My First Language Frontend*](https://llvm.org/docs/tutorial/MyFirstLanguageFrontend/index.html) 走。它把文本程序变成 LLVM 能用的中间表示，再交给 LLVM 做优化和代码生成。
 
-Sources are split under [`src/`](src/) (lexer, parser, AST headers, codegen, and `main`). After each function is built, the **new LLVM pass manager** runs **Mem2Reg**, then a **hand-written** [`KaleidoscopeAlgebraicSimplifyPass`](src/passes/AlgebraicSimplifyPass.cpp) ([`Passes.h`](src/passes/Passes.h)) (`x±0`, `x*1`, `x*0`, … on `double` IR), then LLVM’s **InstCombine**, **Reassociate**, **GVN**, and **CFG simplification**; finally IR goes to the JIT or `build/output.o`.
+你可以把它当作「从零搭一条语言前端」的示例：有词法、语法树、IR，也支持教程里常见的那种**即时执行**和**生成目标文件**两种玩法。教程后半关于调试信息的一章这里没有做。
 
-## Prerequisites
+## 需要什么
 
-- **LLVM** with development headers and `llvm-config` on your `PATH`  
-  - **macOS (Homebrew):** `brew install llvm`  
-    Then either use the Homebrew clang (`$(brew --prefix llvm)/bin/clang++`) or put LLVM’s `bin` on `PATH`, for example:
-    ```bash
-    export PATH="/opt/homebrew/opt/llvm/bin:$PATH"
-    ```
-  - **Linux:** install `llvm-dev` / `llvm-<version>-dev` (package names vary by distro).
+本机装好 **LLVM**（要让 `llvm-config` 在终端里能直接跑）。macOS 上常用 Homebrew 安装 LLVM，并把它的 `bin` 加到 `PATH`。
 
-Verify:
+## 怎么编译这个仓库
 
-```bash
-llvm-config --version
-make check-llvm
-```
-
-## Build
+在项目根目录执行：
 
 ```bash
 make
 ```
 
-Produces **`build/kaleidoscope`** (see [`Makefile`](Makefile)). If `llvm-config` is not on your `PATH`, pass the real binary (not a placeholder):
+得到可执行文件 `build/kaleidoscope`。若系统找不到 LLVM，安装或配置好 `PATH` 后重试，或通过 `make LLVM_CONFIG=...` 指定本机的 `llvm-config`。
 
-```bash
-# macOS Homebrew LLVM — adjust if your prefix differs
-make LLVM_CONFIG="$(brew --prefix llvm)/bin/llvm-config"
-```
+## 怎么用手里的编译器
 
-Clean build artifacts:
-
-```bash
-make clean
-```
-
-## Run
-
-The driver reads the whole program from **standard input** until EOF (one `ready>` prompt at startup). Paste your program, then press **Ctrl+D** (Unix) to finish.
+程序从**标准输入**读入一整段 Kaleidoscope 源码，读到 **Ctrl+D** 结束。非交互时可以：
 
 ```bash
 ./build/kaleidoscope < examples/sample.kal
 ```
 
-**JIT mode** (tutorial Chapter 4–style: `addModule` / `lookup`, evaluates top-level expressions such as `4+5;`):
+- **默认模式**：在退出前生成机器相关的目标文件（便于和别的代码链接成最终程序）。  
+- **`--jit` 模式**：在进程里直接跑顶层表达式，适合快速试算。  
+- **`make run-aot`**：仓库自带一条「先编译再链接再运行」的演示，用来在非 JIT 下看到数值结果（需在源码里提供约定的入口函数；默认试跑用的源码也一并附上）。
 
-```bash
-printf '4+5;\n' | ./build/kaleidoscope --jit
-```
+`./build/kaleidoscope --help` 可查看简短说明。
 
-Or interactively:
+## 语言本身
 
-```bash
-./build/kaleidoscope
-# type expressions; end with Ctrl+D
-```
+Kaleidoscope 的语法与语义以官方教程为准：函数定义、运算符、控制流、`var` 等教程里逐步加上的内容，在这里按同一套教学路线实现。细节与章节对应关系可直接读 [教程目录](https://llvm.org/docs/tutorial/MyFirstLanguageFrontend/index.html)。
 
-Use `./build/kaleidoscope --help` for options.
+## 延伸阅读
 
-### Language tips
-
-- **`def`** parameter lists use **spaces**, not commas: `def add(a b) a + b;`
-- **Calls** use commas: `add(1, 2);`
-- Declare runtime helpers from C before use, e.g. `extern printd(x);` (see `putchard` / `printd` in [`src/main.cpp`](src/main.cpp)).
-
-Without **`--jit`**, the driver only generates IR and emits **`build/output.o`** at exit (top-level expressions are compiled but not executed). With **`--jit`**, **`src/JIT.h`** matches upstream LLVM’s Orc helper (upgrade this header when you bump LLVM); definitions are **`addModule`**’d as in the tutorial, and anonymous top-level expressions are **`lookup`**’d and called—there is **no** `output.o` on **`--jit`** runs (emit-ahead-of-time and JIT are separate pipelines in one binary).
-
-
-## AOT Run (non-JIT)
-
-To see a non-JIT runtime result, define an `entry` function in Kaleidoscope and use the provided runner:
-
-```bash
-make run-aot
-```
-
-This does three steps: compile frontend -> emit `build/output.o` -> link with `src/runtime.c` + `src/aot_runner.c` -> execute runner.
-
-Override input file:
-
-```bash
-make run-aot KAL_FILE=examples/aot_entry.kal
-```
-
-## Repository layout
-
-| Path | Description |
-|------|-------------|
-| [`src/`](src/) | Frontend sources above; [`passes/`](src/passes/) contains **custom LLVM `FunctionPass` IR transforms**; [`JIT.h`](src/JIT.h) (upstream Orc JIT helper; use **`--jit`**) |
-| [`Makefile`](Makefile) | Build into `build/` using `llvm-config` |
-| [`docs/`](docs/) | Personal study notes (LLVM pipeline, C++) |
-| [`examples/`](examples/) | Sample inputs and unrelated small demos |
-
-The `build/` directory (and stray legacy binaries/objects in the repo root), local tooling caches, and machine-specific files are excluded via [`.gitignore`](.gitignore).
-
-## References
-
-- [LLVM Kaleidoscope tutorial](https://llvm.org/docs/tutorial/MyFirstLanguageFrontend/index.html)
+- [LLVM Kaleidoscope 教程](https://llvm.org/docs/tutorial/MyFirstLanguageFrontend/index.html)  
 - [LLVM Language Reference](https://llvm.org/docs/LangRef.html)

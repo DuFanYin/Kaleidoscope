@@ -1,8 +1,8 @@
-#include "AST.h"
-#include "Codegen.h"
-#include "JIT.h"
-#include "Parser.h"
-#include "passes/Passes.h"
+#include "frontend/AST.h"
+#include "backend/Codegen.h"
+#include "backend/JIT.h"
+#include "frontend/Parser.h"
+#include "backend/passes/Passes.h"
 
 #include "llvm/ADT/APFloat.h"
 #include "llvm/IR/BasicBlock.h"

@@ -1,5 +1,8 @@
 #pragma once
+
 #include <string>
+
+#include <string_view>
 
 namespace kaleidoscope {
 
@@ -39,5 +42,11 @@ extern std::string IdentifierStr; // Filled in if tok_identifier
 extern double NumVal;               // Filled in if tok_number
 
 int gettok();
+
+/// Read tokens from stdin (default).
+void setLexerStdinSource();
+
+/// Read tokens from an in-memory buffer (e.g. embed API). Replaces stdin mode.
+void setLexerStringSource(std::string_view source);
 
 } // namespace kaleidoscope

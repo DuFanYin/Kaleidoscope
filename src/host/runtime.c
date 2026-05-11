@@ -1,3 +1,5 @@
+#include "host/kal_runtime.h"
+
 #include <stdio.h>
 
 double putchard(double X) {

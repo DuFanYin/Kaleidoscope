@@ -1,6 +1,6 @@
 #pragma once
 
-#include "AST.h"
+#include "frontend/AST.h"
 
 #include <map>
 #include <memory>
@@ -12,6 +12,8 @@ extern int CurTok;
 int getNextToken();
 
 extern std::map<char, int> BinopPrecedence;
+
+void installDefaultBinaryOperatorPrecedence();
 
 std::unique_ptr<ExprAST> LogError(const char *Str);
 std::unique_ptr<PrototypeAST> LogErrorP(const char *Str);

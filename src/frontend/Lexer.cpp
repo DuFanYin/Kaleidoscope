@@ -1,8 +1,9 @@
-#include "Lexer.h"
+#include "frontend/Lexer.h"
 
 #include <cctype>
 #include <cstdio>
 #include <cstdlib>
+#include <string>
 
 namespace kaleidoscope {
 
@@ -13,19 +14,49 @@ namespace kaleidoscope {
 std::string IdentifierStr; // Filled in if tok_identifier
 double NumVal;             // Filled in if tok_number
 
-/// gettok - Return the next token from standard input.
+namespace {
+
+enum class LexerSource { Stdin, String };
+
+LexerSource SourceMode = LexerSource::Stdin;
+std::string StringBuffer;
+size_t StringPos = 0;
+int LastChar = ' ';
+
+int readNextChar() {
+  if (SourceMode == LexerSource::String) {
+    if (StringPos >= StringBuffer.size())
+      return EOF;
+    return static_cast<unsigned char>(StringBuffer[StringPos++]);
+  }
+  return getchar();
+}
+
+} // namespace
+
+void setLexerStdinSource() {
+  SourceMode = LexerSource::Stdin;
+  LastChar = ' ';
+}
+
+void setLexerStringSource(std::string_view source) {
+  SourceMode = LexerSource::String;
+  StringBuffer.assign(source.begin(), source.end());
+  StringPos = 0;
+  LastChar = ' ';
+}
+
+/// gettok - Return the next token from the configured source.
 int gettok()
 {
-  static int LastChar = ' ';
-
   // Skip any whitespace.
   while (isspace(LastChar))
-    LastChar = getchar();
+    LastChar = readNextChar();
 
   if (isalpha(LastChar))
   { // identifier: [a-zA-Z][a-zA-Z0-9]*
     IdentifierStr = LastChar;
-    while (isalnum((LastChar = getchar())))
+    while (isalnum((LastChar = readNextChar())))
       IdentifierStr += LastChar;
 
     if (IdentifierStr == "def")
@@ -57,7 +88,7 @@ int gettok()
     do
     {
       NumStr += LastChar;
-      LastChar = getchar();
+      LastChar = readNextChar();
     } while (isdigit(LastChar) || LastChar == '.');
 
     NumVal = strtod(NumStr.c_str(), nullptr);
@@ -68,7 +99,7 @@ int gettok()
   {
     // Comment until end of line.
     do
-      LastChar = getchar();
+      LastChar = readNextChar();
     while (LastChar != EOF && LastChar != '\n' && LastChar != '\r');
 
     if (LastChar != EOF)
@@ -81,7 +112,7 @@ int gettok()
 
   // Otherwise, just return the character as its ascii value.
   int ThisChar = LastChar;
-  LastChar = getchar();
+  LastChar = readNextChar();
   return ThisChar;
 }
 

@@ -1,6 +1,6 @@
-#include "Lexer.h"
-#include "Parser.h"
-#include "AST.h"
+#include "frontend/Lexer.h"
+#include "frontend/Parser.h"
+#include "frontend/AST.h"
 
 #include <cctype>
 #include <cstdio>
@@ -25,6 +25,14 @@ int getNextToken() { return CurTok = gettok(); }
 /// BinopPrecedence - This holds the precedence for each binary operator that is
 /// defined.
 std::map<char, int> BinopPrecedence;
+
+void installDefaultBinaryOperatorPrecedence() {
+  BinopPrecedence.clear();
+  BinopPrecedence['<'] = 10;
+  BinopPrecedence['+'] = 20;
+  BinopPrecedence['-'] = 20;
+  BinopPrecedence['*'] = 40;
+}
 
 /// GetTokPrecedence - Get the precedence of the pending binary operator token.
 int GetTokPrecedence()
