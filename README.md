@@ -1,8 +1,8 @@
 # Kaleidoscope
 
-A small educational compiler for the **Kaleidoscope** language from the [LLVM “My First Language Frontend” tutorial](https://llvm.org/docs/tutorial/MyFirstLanguageFrontend/index.html). It lexes and parses input, builds an AST, and generates LLVM IR. **Two drivers:** by default it writes a native object file (`output.o`); with **`--jit`** it uses the tutorial Orc JIT to run top-level expressions in process (no `output.o` in that run).
+A small educational compiler for the **Kaleidoscope** language from the [LLVM “My First Language Frontend” tutorial](https://llvm.org/docs/tutorial/MyFirstLanguageFrontend/index.html). It lexes and parses input, builds an AST, and generates LLVM IR. **Two drivers:** by default it writes a native object file (`build/output.o`); with **`--jit`** it uses the tutorial Orc JIT to run top-level expressions in process (no `output.o` in that run).
 
-Sources are split under [`src/`](src/) (lexer, parser, AST headers, codegen, and `main`). After each function is built, a **legacy function pass manager** runs **Mem2Reg**, then a **hand-written** [`KaleidoscopeAlgebraicSimplifyPass`](src/passes/AlgebraicSimplifyPass.cpp) ([`Passes.h`](src/passes/Passes.h)) (`x±0`, `x*1`, `x*0`, … on `double` IR), then LLVM’s **InstCombine**, **Reassociate**, **GVN**, and **CFG simplification** (tutorial Chapter 4 bundle); finally IR goes to the JIT or `output.o`.
+Sources are split under [`src/`](src/) (lexer, parser, AST headers, codegen, and `main`). After each function is built, the **new LLVM pass manager** runs **Mem2Reg**, then a **hand-written** [`KaleidoscopeAlgebraicSimplifyPass`](src/passes/AlgebraicSimplifyPass.cpp) ([`Passes.h`](src/passes/Passes.h)) (`x±0`, `x*1`, `x*0`, … on `double` IR), then LLVM’s **InstCombine**, **Reassociate**, **GVN**, and **CFG simplification**; finally IR goes to the JIT or `build/output.o`.
 
 ## Prerequisites
 
@@ -69,7 +69,24 @@ Use `./build/kaleidoscope --help` for options.
 - **Calls** use commas: `add(1, 2);`
 - Declare runtime helpers from C before use, e.g. `extern printd(x);` (see `putchard` / `printd` in [`src/main.cpp`](src/main.cpp)).
 
-Without **`--jit`**, the driver only generates IR and emits **`output.o`** at exit (top-level expressions are compiled but not executed). With **`--jit`**, **`src/JIT.h`** matches upstream LLVM’s Orc helper (upgrade this header when you bump LLVM); definitions are **`addModule`**’d as in the tutorial, and anonymous top-level expressions are **`lookup`**’d and called—there is **no** `output.o` on **`--jit`** runs (emit-ahead-of-time and JIT are separate pipelines in one binary).
+Without **`--jit`**, the driver only generates IR and emits **`build/output.o`** at exit (top-level expressions are compiled but not executed). With **`--jit`**, **`src/JIT.h`** matches upstream LLVM’s Orc helper (upgrade this header when you bump LLVM); definitions are **`addModule`**’d as in the tutorial, and anonymous top-level expressions are **`lookup`**’d and called—there is **no** `output.o` on **`--jit`** runs (emit-ahead-of-time and JIT are separate pipelines in one binary).
+
+
+## AOT Run (non-JIT)
+
+To see a non-JIT runtime result, define an `entry` function in Kaleidoscope and use the provided runner:
+
+```bash
+make run-aot
+```
+
+This does three steps: compile frontend -> emit `build/output.o` -> link with `src/runtime.c` + `src/aot_runner.c` -> execute runner.
+
+Override input file:
+
+```bash
+make run-aot KAL_FILE=examples/aot_entry.kal
+```
 
 ## Repository layout
 

@@ -9,6 +9,7 @@
 #include "llvm/Support/CodeGen.h"
 #include "llvm/Support/Error.h"
 #include "llvm/Support/FileSystem.h"
+#include "llvm/Support/Path.h"
 #include "llvm/TargetParser/Host.h"
 #include "llvm/TargetParser/Triple.h"
 #include "llvm/Support/TargetSelect.h"
@@ -164,9 +165,9 @@ extern "C" DLLEXPORT double printd(double X)
 static void printHelp(const char *argv0)
 {
   errs() << "Usage: " << argv0 << " [options]\n"
-         << "  (default)  Read stdin, emit LLVM object file output.o\n"
+         << "  (default)  Read stdin, emit LLVM object file build/output.o\n"
          << "  --jit      Use in-process Orc JIT; execute top-level expressions\n"
-         << "             (no output.o; IR is owned by the JIT during the run)\n"
+         << "             (no object file; IR is owned by the JIT during the run)\n"
          << "  -h, --help Show this help\n";
 }
 
@@ -256,7 +257,13 @@ int main(int argc, char **argv)
 
   TheModule->setDataLayout(TheTargetMachine->createDataLayout());
 
-  auto Filename = "output.o";
+  const std::string Filename = "build/output.o";
+  if (llvm::StringRef Dir = llvm::sys::path::parent_path(Filename); !Dir.empty()) {
+    if (std::error_code MK = sys::fs::create_directories(Dir)) {
+      errs() << "Could not create directory " << Dir << ": " << MK.message() << "\n";
+      return 1;
+    }
+  }
   std::error_code EC;
   raw_fd_ostream dest(Filename, EC, sys::fs::OF_None);
 

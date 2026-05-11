@@ -11,8 +11,11 @@ endif
 BUILD_DIR := build
 EXE       := kaleidoscope
 TARGET    := $(BUILD_DIR)/$(EXE)
+KAL_FILE  ?= examples/aot_entry.kal
+AOT_RUNNER := $(BUILD_DIR)/aot_runner
 
 CXX      := $(shell $(LLVM_CONFIG) --bindir)/clang++
+CC       := $(shell $(LLVM_CONFIG) --bindir)/clang
 CXXFLAGS := -std=c++20 -O1 -Wall -Wextra -Wno-unused-parameter -Isrc
 SRCS := src/Lexer.cpp src/Parser.cpp src/Codegen.cpp \
 	src/passes/AlgebraicSimplifyPass.cpp src/main.cpp
@@ -21,7 +24,7 @@ LLVM_CXXFLAGS := $(shell $(LLVM_CONFIG) --cxxflags)
 LLVM_LDFLAGS  := $(shell $(LLVM_CONFIG) --ldflags --system-libs)
 LLVM_LIBS     := $(shell $(LLVM_CONFIG) --libs core mcjit native orcjit)
 
-.PHONY: all clean check-llvm
+.PHONY: all clean check-llvm run-aot aot-link
 
 all: $(TARGET)
 
@@ -37,3 +40,11 @@ clean:
 
 check-llvm:
 	@$(LLVM_CONFIG) --version && echo "LLVM OK ($(LLVM_CONFIG))"
+
+
+aot-link: $(TARGET) | $(BUILD_DIR)
+	./$(TARGET) < $(KAL_FILE)
+	$(CC) $(BUILD_DIR)/output.o src/runtime.c src/aot_runner.c -o $(AOT_RUNNER)
+
+run-aot: aot-link
+	./$(AOT_RUNNER)
