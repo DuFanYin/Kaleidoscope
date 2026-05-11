@@ -12,7 +12,7 @@ BUILD_DIR := build
 EXE       := kaleidoscope
 TARGET    := $(BUILD_DIR)/$(EXE)
 RT_OBJ    := $(BUILD_DIR)/host_runtime.o
-KAL_FILE  ?= examples/aot_entry.kal
+KAL_FILE  ?= examples/pricing.kal
 AOT_RUNNER := $(BUILD_DIR)/aot_runner
 EMBED_SMOKE := $(BUILD_DIR)/embed_smoke
 

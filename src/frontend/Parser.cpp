@@ -28,19 +28,24 @@ std::map<char, int> BinopPrecedence;
 
 void installDefaultBinaryOperatorPrecedence() {
   BinopPrecedence.clear();
-  BinopPrecedence['<'] = 10;
-  BinopPrecedence['+'] = 20;
-  BinopPrecedence['-'] = 20;
+  BinopPrecedence['='] = 2;
+  BinopPrecedence['<'] = 18;
+  BinopPrecedence['+'] = 25;
+  BinopPrecedence['-'] = 25;
   BinopPrecedence['*'] = 40;
 }
 
 /// GetTokPrecedence - Get the precedence of the pending binary operator token.
 int GetTokPrecedence()
 {
+  if (CurTok == tok_or)
+    return 12;
+  if (CurTok == tok_and)
+    return 14;
+
   if (!isascii(CurTok))
     return -1;
 
-  // Make sure it's a declared binop.
   int TokPrec = BinopPrecedence[CurTok];
   if (TokPrec <= 0)
     return -1;
@@ -202,6 +207,26 @@ static std::unique_ptr<ExprAST> ParseForExpr()
                                       std::move(Step), std::move(Body));
 }
 
+/// whileexpr ::= 'while' expression 'in' expression
+static std::unique_ptr<ExprAST> ParseWhileExpr()
+{
+  getNextToken(); // eat the while.
+
+  auto Cond = ParseExpression();
+  if (!Cond)
+    return nullptr;
+
+  if (CurTok != tok_in)
+    return LogError("expected 'in' after while condition");
+  getNextToken(); // eat 'in'.
+
+  auto Body = ParseExpression();
+  if (!Body)
+    return nullptr;
+
+  return std::make_unique<WhileExprAST>(std::move(Cond), std::move(Body));
+}
+
 /// varexpr ::= 'var' identifier ('=' expression)?
 //                    (',' identifier ('=' expression)?)* 'in' expression
 static std::unique_ptr<ExprAST> ParseVarExpr()
@@ -259,6 +284,7 @@ static std::unique_ptr<ExprAST> ParseVarExpr()
 ///   ::= parenexpr
 ///   ::= ifexpr
 ///   ::= forexpr
+///   ::= whileexpr
 ///   ::= varexpr
 static std::unique_ptr<ExprAST> ParsePrimary()
 {
@@ -270,27 +296,48 @@ static std::unique_ptr<ExprAST> ParsePrimary()
     return ParseIdentifierExpr();
   case tok_number:
     return ParseNumberExpr();
+  case tok_true:
+    getNextToken();
+    return std::make_unique<NumberExprAST>(1.0);
+  case tok_false:
+    getNextToken();
+    return std::make_unique<NumberExprAST>(0.0);
   case '(':
     return ParseParenExpr();
   case tok_if:
     return ParseIfExpr();
   case tok_for:
     return ParseForExpr();
+  case tok_while:
+    return ParseWhileExpr();
   case tok_var:
     return ParseVarExpr();
+  case tok_break:
+    getNextToken();
+    return std::make_unique<BreakExprAST>();
+  case tok_continue:
+    getNextToken();
+    return std::make_unique<ContinueExprAST>();
   }
 }
 
 /// unary
 ///   ::= primary
+///   ::= 'not' unary
 ///   ::= '!' unary
 static std::unique_ptr<ExprAST> ParseUnary()
 {
+  if (CurTok == tok_not) {
+    getNextToken();
+    if (auto Operand = ParseUnary())
+      return std::make_unique<NotExprAST>(std::move(Operand));
+    return nullptr;
+  }
+
   // If the current token is not an operator, it must be a primary expr.
   if (!isascii(CurTok) || CurTok == '(' || CurTok == ',')
     return ParsePrimary();
 
-  // If this is a unary operator, read it.
   int Opc = CurTok;
   getNextToken();
   if (auto Operand = ParseUnary())
@@ -313,17 +360,13 @@ static std::unique_ptr<ExprAST> ParseBinOpRHS(int ExprPrec,
     if (TokPrec < ExprPrec)
       return LHS;
 
-    // Okay, we know this is a binop.
-    int BinOp = CurTok;
-    getNextToken(); // eat binop
+    int OpTok = CurTok;
+    getNextToken();
 
-    // Parse the unary expression after the binary operator.
     auto RHS = ParseUnary();
     if (!RHS)
       return nullptr;
 
-    // If BinOp binds less tightly with RHS than the operator after RHS, let
-    // the pending operator take RHS as its LHS.
     int NextPrec = GetTokPrecedence();
     if (TokPrec < NextPrec)
     {
@@ -332,9 +375,14 @@ static std::unique_ptr<ExprAST> ParseBinOpRHS(int ExprPrec,
         return nullptr;
     }
 
-    // Merge LHS/RHS.
-    LHS =
-        std::make_unique<BinaryExprAST>(BinOp, std::move(LHS), std::move(RHS));
+    if (OpTok == tok_and)
+      LHS = std::make_unique<LogicalAndExprAST>(std::move(LHS),
+                                                std::move(RHS));
+    else if (OpTok == tok_or)
+      LHS = std::make_unique<LogicalOrExprAST>(std::move(LHS), std::move(RHS));
+    else
+      LHS = std::make_unique<BinaryExprAST>(static_cast<char>(OpTok),
+                                            std::move(LHS), std::move(RHS));
   }
 }
 

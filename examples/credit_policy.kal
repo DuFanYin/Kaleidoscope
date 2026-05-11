@@ -1,0 +1,13 @@
+# 场景：小贷终审流水线。拉黑一票否决；否则「有担保」或「分数够用且逾期不严重」才过。
+extern printd(x);
+
+# black=1 表示在黑名单；score 0～1；cosign=1 有担保；missed 为连续逾期月份数。
+def finalok(black score cosign missed)
+    not black and (cosign or (not (score < 0.6) and missed < 2.5));
+
+printd(0 - 9101);
+printd(finalok(1, 0.9, 0, 0));
+printd(finalok(0, 0.5, 1, 0));
+printd(finalok(0, 0.5, 0, 5));
+printd(finalok(0, 0.75, 0, 2));
+printd(finalok(0, 0.75, 0, 3));

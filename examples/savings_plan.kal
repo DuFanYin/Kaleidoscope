@@ -1,0 +1,15 @@
+# 场景：定投 + 复利。先算已知月数到期余额；再反推「从零开始摸到目标本息」至少需要几个月。
+extern printd(x);
+
+def runway(bal rate contrib mosleft)
+    if mosleft < 0.5 then bal
+    else runway(bal * rate + contrib, rate, contrib, mosleft - 1);
+
+# 从零起步，按月 rate、定投 contrib，直到不低于 goal（双精度比较用严格 <）。
+def climb(goal rate contrib bal months)
+    if not (bal < goal) then months
+    else climb(goal, rate, contrib, bal * rate + contrib, months + 1);
+
+printd(0 - 9103);
+printd(runway(0, 1.009, 600, 18));
+printd(climb(22000, 1.009, 600, 0, 0));

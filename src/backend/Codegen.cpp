@@ -25,6 +25,8 @@
 #include "llvm/Transforms/Scalar/SimplifyCFG.h"
 #include "llvm/Transforms/Utils/Mem2Reg.h"
 
+#include "llvm/IR/CFG.h"
+
 #include <vector>
 
 using namespace llvm;
@@ -46,6 +48,34 @@ std::unique_ptr<FunctionAnalysisManager> TheFAM;
 std::unique_ptr<FunctionPassManager> OptFunctionPasses;
 std::map<std::string, AllocaInst *> NamedValues;
 std::map<std::string, std::unique_ptr<PrototypeAST>> FunctionProtos;
+
+//===----------------------------------------------------------------------===//
+// Loop break/continue
+//===----------------------------------------------------------------------===//
+
+enum class CFGTokenKind { None, Break, Continue };
+static CFGTokenKind ActiveLoopControl = CFGTokenKind::None;
+
+struct LoopTargets {
+  BasicBlock *ContinueDest;
+  BasicBlock *BreakDest;
+};
+static std::vector<LoopTargets> LoopStack;
+
+static void clearCodegenLoopState() {
+  ActiveLoopControl = CFGTokenKind::None;
+  LoopStack.clear();
+}
+
+static bool blockBranchesTo(BasicBlock *BB, BasicBlock *Target) {
+  Instruction *TI = BB->getTerminator();
+  if (!TI)
+    return false;
+  for (BasicBlock *Succ : successors(TI))
+    if (Succ == Target)
+      return true;
+  return false;
+}
 
 Value *LogErrorV(const char *Str)
 {
@@ -106,6 +136,100 @@ Value *UnaryExprAST::codegen()
     return LogErrorV("Unknown unary operator");
 
   return Builder->CreateCall(F, OperandV, "unop");
+}
+
+Value *NotExprAST::codegen() {
+  Value *V = Operand->codegen();
+  if (!V)
+    return nullptr;
+  Value *Zero = ConstantFP::get(*TheContext, APFloat(0.0));
+  Value *IsZero = Builder->CreateFCmpOEQ(V, Zero, "notcmp");
+  return Builder->CreateUIToFP(IsZero, Type::getDoubleTy(*TheContext), "notdbl");
+}
+
+Value *BreakExprAST::codegen() {
+  if (LoopStack.empty())
+    return LogErrorV("break outside loop");
+  Builder->CreateBr(LoopStack.back().BreakDest);
+  ActiveLoopControl = CFGTokenKind::Break;
+  return ConstantFP::get(*TheContext, APFloat(0.0));
+}
+
+Value *ContinueExprAST::codegen() {
+  if (LoopStack.empty())
+    return LogErrorV("continue outside loop");
+  Builder->CreateBr(LoopStack.back().ContinueDest);
+  ActiveLoopControl = CFGTokenKind::Continue;
+  return ConstantFP::get(*TheContext, APFloat(0.0));
+}
+
+Value *LogicalAndExprAST::codegen() {
+  Function *TheFunction = Builder->GetInsertBlock()->getParent();
+  Value *L = LHS->codegen();
+  if (!L)
+    return nullptr;
+
+  Value *Zero = ConstantFP::get(*TheContext, APFloat(0.0));
+  Value *Ltruth = Builder->CreateFCmpONE(L, Zero, "landlhs");
+
+  BasicBlock *RhsBB = BasicBlock::Create(*TheContext, "land.rhs", TheFunction);
+  BasicBlock *MergeBB = BasicBlock::Create(*TheContext, "land.end", TheFunction);
+  BasicBlock *LHSEnd = Builder->GetInsertBlock();
+
+  Builder->CreateCondBr(Ltruth, RhsBB, MergeBB);
+
+  Builder->SetInsertPoint(RhsBB);
+  Value *R = RHS->codegen();
+  if (!R)
+    return nullptr;
+  Value *Rtruth = Builder->CreateFCmpONE(R, Zero, "landrhs");
+  Value *Rdbl =
+      Builder->CreateUIToFP(Rtruth, Type::getDoubleTy(*TheContext), "landrhsdbl");
+  Builder->CreateBr(MergeBB);
+  BasicBlock *RhsEnd = Builder->GetInsertBlock();
+
+  Builder->SetInsertPoint(MergeBB);
+  PHINode *PN = Builder->CreatePHI(Type::getDoubleTy(*TheContext), 2, "landphi");
+  PN->addIncoming(Zero, LHSEnd);
+  PN->addIncoming(Rdbl, RhsEnd);
+  return PN;
+}
+
+Value *LogicalOrExprAST::codegen() {
+  Function *TheFunction = Builder->GetInsertBlock()->getParent();
+  Value *L = LHS->codegen();
+  if (!L)
+    return nullptr;
+
+  Value *Zero = ConstantFP::get(*TheContext, APFloat(0.0));
+  Value *One = ConstantFP::get(*TheContext, APFloat(1.0));
+  Value *Ltruth = Builder->CreateFCmpONE(L, Zero, "lorlhs");
+
+  BasicBlock *TrueBB = BasicBlock::Create(*TheContext, "lor.true", TheFunction);
+  BasicBlock *RhsBB = BasicBlock::Create(*TheContext, "lor.rhs", TheFunction);
+  BasicBlock *MergeBB = BasicBlock::Create(*TheContext, "lor.end", TheFunction);
+
+  Builder->CreateCondBr(Ltruth, TrueBB, RhsBB);
+
+  Builder->SetInsertPoint(TrueBB);
+  Builder->CreateBr(MergeBB);
+  BasicBlock *TrueEnd = Builder->GetInsertBlock();
+
+  Builder->SetInsertPoint(RhsBB);
+  Value *R = RHS->codegen();
+  if (!R)
+    return nullptr;
+  Value *Rtruth = Builder->CreateFCmpONE(R, Zero, "lorrhs");
+  Value *Rdbl =
+      Builder->CreateUIToFP(Rtruth, Type::getDoubleTy(*TheContext), "lorrhsdbl");
+  Builder->CreateBr(MergeBB);
+  BasicBlock *RhsEnd = Builder->GetInsertBlock();
+
+  Builder->SetInsertPoint(MergeBB);
+  PHINode *PN = Builder->CreatePHI(Type::getDoubleTy(*TheContext), 2, "lorphi");
+  PN->addIncoming(One, TrueEnd);
+  PN->addIncoming(Rdbl, RhsEnd);
+  return PN;
 }
 
 Value *BinaryExprAST::codegen()
@@ -192,50 +316,53 @@ Value *IfExprAST::codegen()
   if (!CondV)
     return nullptr;
 
-  // Convert condition to a bool by comparing non-equal to 0.0.
   CondV = Builder->CreateFCmpONE(
       CondV, ConstantFP::get(*TheContext, APFloat(0.0)), "ifcond");
 
   Function *TheFunction = Builder->GetInsertBlock()->getParent();
 
-  // Create blocks for the then and else cases.  Insert the 'then' block at the
-  // end of the function.
   BasicBlock *ThenBB = BasicBlock::Create(*TheContext, "then", TheFunction);
-  BasicBlock *ElseBB = BasicBlock::Create(*TheContext, "else");
-  BasicBlock *MergeBB = BasicBlock::Create(*TheContext, "ifcont");
+  BasicBlock *ElseBB = BasicBlock::Create(*TheContext, "else", TheFunction);
+  BasicBlock *MergeBB = BasicBlock::Create(*TheContext, "ifcont", TheFunction);
 
   Builder->CreateCondBr(CondV, ThenBB, ElseBB);
 
-  // Emit then value.
   Builder->SetInsertPoint(ThenBB);
 
   Value *ThenV = Then->codegen();
   if (!ThenV)
     return nullptr;
 
-  Builder->CreateBr(MergeBB);
-  // Codegen of 'Then' can change the current block, update ThenBB for the PHI.
-  ThenBB = Builder->GetInsertBlock();
+  BasicBlock *ThenEnd = Builder->GetInsertBlock();
+  if (!ThenEnd->getTerminator())
+    Builder->CreateBr(MergeBB);
 
-  // Emit else block.
-  TheFunction->insert(TheFunction->end(), ElseBB);
   Builder->SetInsertPoint(ElseBB);
 
   Value *ElseV = Else->codegen();
   if (!ElseV)
     return nullptr;
 
-  Builder->CreateBr(MergeBB);
-  // Codegen of 'Else' can change the current block, update ElseBB for the PHI.
-  ElseBB = Builder->GetInsertBlock();
+  BasicBlock *ElseEnd = Builder->GetInsertBlock();
+  if (!ElseEnd->getTerminator())
+    Builder->CreateBr(MergeBB);
 
-  // Emit merge block.
-  TheFunction->insert(TheFunction->end(), MergeBB);
+  SmallVector<std::pair<Value *, BasicBlock *>, 2> Incomings;
+  if (blockBranchesTo(ThenEnd, MergeBB))
+    Incomings.push_back({ThenV, ThenEnd});
+  if (blockBranchesTo(ElseEnd, MergeBB))
+    Incomings.push_back({ElseV, ElseEnd});
+
   Builder->SetInsertPoint(MergeBB);
-  PHINode *PN = Builder->CreatePHI(Type::getDoubleTy(*TheContext), 2, "iftmp");
+  if (Incomings.empty())
+    return ConstantFP::get(*TheContext, APFloat(0.0));
+  if (Incomings.size() == 1)
+    return Incomings[0].first;
 
-  PN->addIncoming(ThenV, ThenBB);
-  PN->addIncoming(ElseV, ElseBB);
+  PHINode *PN =
+      Builder->CreatePHI(Type::getDoubleTy(*TheContext), Incomings.size(), "iftmp");
+  for (auto &Incoming : Incomings)
+    PN->addIncoming(Incoming.first, Incoming.second);
   return PN;
 }
 
@@ -262,85 +389,135 @@ Value *ForExprAST::codegen()
 {
   Function *TheFunction = Builder->GetInsertBlock()->getParent();
 
-  // Create an alloca for the variable in the entry block.
   AllocaInst *Alloca = CreateEntryBlockAlloca(TheFunction, VarName);
 
-  // Emit the start code first, without 'variable' in scope.
   Value *StartVal = Start->codegen();
   if (!StartVal)
     return nullptr;
 
-  // Store the value into the alloca.
   Builder->CreateStore(StartVal, Alloca);
 
-  // Make the new basic block for the loop header, inserting after current
-  // block.
-  BasicBlock *LoopBB = BasicBlock::Create(*TheContext, "loop", TheFunction);
+  BasicBlock *BodyBB = BasicBlock::Create(*TheContext, "for.body", TheFunction);
+  BasicBlock *StepBB = BasicBlock::Create(*TheContext, "for.step", TheFunction);
+  BasicBlock *AfterBB = BasicBlock::Create(*TheContext, "afterloop", TheFunction);
 
-  // Insert an explicit fall through from the current block to the LoopBB.
-  Builder->CreateBr(LoopBB);
+  Builder->CreateBr(BodyBB);
 
-  // Start insertion in LoopBB.
-  Builder->SetInsertPoint(LoopBB);
+  LoopTargets LTargets{StepBB, AfterBB};
+  LoopStack.push_back(LTargets);
 
-  // Within the loop, the variable is defined equal to the PHI node.  If it
-  // shadows an existing variable, we have to restore it, so save it now.
   AllocaInst *OldVal = NamedValues[VarName];
   NamedValues[VarName] = Alloca;
 
-  // Emit the body of the loop.  This, like any other expr, can change the
-  // current BB.  Note that we ignore the value computed by the body, but don't
-  // allow an error.
-  if (!Body->codegen())
-    return nullptr;
+  Builder->SetInsertPoint(BodyBB);
+  ActiveLoopControl = CFGTokenKind::None;
 
-  // Emit the step value.
+  if (!Body->codegen()) {
+    if (OldVal)
+      NamedValues[VarName] = OldVal;
+    else
+      NamedValues.erase(VarName);
+    LoopStack.pop_back();
+    return nullptr;
+  }
+
+  ActiveLoopControl = CFGTokenKind::None;
+
+  // If the body ends on a merge block (e.g. if/else where else breaks), that
+  // block still needs a successor; break/continue already set a terminator on
+  // their own blocks.
+  if (!Builder->GetInsertBlock()->getTerminator())
+    Builder->CreateBr(StepBB);
+
+  Builder->SetInsertPoint(StepBB);
+
   Value *StepVal = nullptr;
   if (Step)
   {
     StepVal = Step->codegen();
     if (!StepVal)
+    {
+      if (OldVal)
+        NamedValues[VarName] = OldVal;
+      else
+        NamedValues.erase(VarName);
+      LoopStack.pop_back();
       return nullptr;
+    }
   }
   else
   {
-    // If not specified, use 1.0.
     StepVal = ConstantFP::get(*TheContext, APFloat(1.0));
   }
 
-  // Compute the end condition.
   Value *EndCond = End->codegen();
   if (!EndCond)
+  {
+    if (OldVal)
+      NamedValues[VarName] = OldVal;
+    else
+      NamedValues.erase(VarName);
+    LoopStack.pop_back();
     return nullptr;
+  }
 
-  // Reload, increment, and restore the alloca.  This handles the case where
-  // the body of the loop mutates the variable.
   Value *CurVar = Builder->CreateLoad(Type::getDoubleTy(*TheContext), Alloca,
                                       VarName.c_str());
   Value *NextVar = Builder->CreateFAdd(CurVar, StepVal, "nextvar");
   Builder->CreateStore(NextVar, Alloca);
 
-  // Convert condition to a bool by comparing non-equal to 0.0.
   EndCond = Builder->CreateFCmpONE(
       EndCond, ConstantFP::get(*TheContext, APFloat(0.0)), "loopcond");
 
-  // Create the "after loop" block and insert it.
-  BasicBlock *AfterBB =
-      BasicBlock::Create(*TheContext, "afterloop", TheFunction);
+  Builder->CreateCondBr(EndCond, BodyBB, AfterBB);
 
-  // Insert the conditional branch into the end of LoopEndBB.
-  Builder->CreateCondBr(EndCond, LoopBB, AfterBB);
+  LoopStack.pop_back();
 
-  // Any new code will be inserted in AfterBB.
-  Builder->SetInsertPoint(AfterBB);
-
-  // Restore the unshadowed variable.
   if (OldVal)
     NamedValues[VarName] = OldVal;
   else
     NamedValues.erase(VarName);
 
-  // for expr always returns 0.0.
+  Builder->SetInsertPoint(AfterBB);
+
+  return Constant::getNullValue(Type::getDoubleTy(*TheContext));
+}
+
+Value *WhileExprAST::codegen()
+{
+  Function *TheFunction = Builder->GetInsertBlock()->getParent();
+
+  BasicBlock *CondBB = BasicBlock::Create(*TheContext, "while.cond", TheFunction);
+  BasicBlock *LoopBB = BasicBlock::Create(*TheContext, "while.body", TheFunction);
+  BasicBlock *AfterBB = BasicBlock::Create(*TheContext, "while.end", TheFunction);
+
+  Builder->CreateBr(CondBB);
+
+  Builder->SetInsertPoint(CondBB);
+  Value *CondV = Cond->codegen();
+  if (!CondV)
+    return nullptr;
+  CondV = Builder->CreateFCmpONE(
+      CondV, ConstantFP::get(*TheContext, APFloat(0.0)), "whilecond");
+  Builder->CreateCondBr(CondV, LoopBB, AfterBB);
+
+  LoopStack.push_back({CondBB, AfterBB});
+
+  Builder->SetInsertPoint(LoopBB);
+  ActiveLoopControl = CFGTokenKind::None;
+  if (!Body->codegen()) {
+    LoopStack.pop_back();
+    return nullptr;
+  }
+
+  ActiveLoopControl = CFGTokenKind::None;
+
+  if (!Builder->GetInsertBlock()->getTerminator())
+    Builder->CreateBr(CondBB);
+
+  LoopStack.pop_back();
+
+  Builder->SetInsertPoint(AfterBB);
   return Constant::getNullValue(Type::getDoubleTy(*TheContext));
 }
 
@@ -417,6 +594,8 @@ Function *PrototypeAST::codegen()
 
 Function *FunctionAST::codegen()
 {
+  clearCodegenLoopState();
+
   // Transfer ownership of the prototype to the FunctionProtos map, but keep a
   // reference to it for use below.
   auto &P = *Proto;

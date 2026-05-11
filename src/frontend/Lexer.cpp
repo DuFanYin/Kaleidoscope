@@ -73,12 +73,28 @@ int gettok()
       return tok_for;
     if (IdentifierStr == "in")
       return tok_in;
+    if (IdentifierStr == "while")
+      return tok_while;
+    if (IdentifierStr == "true")
+      return tok_true;
+    if (IdentifierStr == "false")
+      return tok_false;
     if (IdentifierStr == "binary")
       return tok_binary;
     if (IdentifierStr == "unary")
       return tok_unary;
     if (IdentifierStr == "var")
       return tok_var;
+    if (IdentifierStr == "break")
+      return tok_break;
+    if (IdentifierStr == "continue")
+      return tok_continue;
+    if (IdentifierStr == "and")
+      return tok_and;
+    if (IdentifierStr == "or")
+      return tok_or;
+    if (IdentifierStr == "not")
+      return tok_not;
     return tok_identifier;
   }
 

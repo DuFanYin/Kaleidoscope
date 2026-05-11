@@ -1,6 +1,0 @@
-extern printd(x);
-
-def add(a b) a + b;
-def mul(a b) a * b;
-
-def entry() add(2, 3) + mul(4, 5);

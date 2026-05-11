@@ -1,0 +1,15 @@
+# 场景：园区电费阶梯——前 cap 「度」按 pa；超出部份按 pb（可把「度」想成计费单位）。
+# 顺带供 `make run-aot`：必须提供无参 `entry`，返回一单中等用量的含税前金额示意。
+extern printd(x);
+
+def tierbill(units cap pa pb)
+    if not (cap < units) then units * pa
+    else cap * pa + (units - cap) * pb;
+
+# 与客户合同挂钩的固定快照价（便于回归 / AOT）。
+def entry() tierbill(180, 150, 0.52, 0.78);
+
+printd(0 - 9100);
+printd(tierbill(95, 150, 0.52, 0.78));
+printd(tierbill(205, 150, 0.52, 0.78));
+printd(entry());

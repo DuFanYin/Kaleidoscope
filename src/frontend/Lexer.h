@@ -29,13 +29,22 @@ enum Token {
   tok_else = -8,
   tok_for = -9,
   tok_in = -10,
+  tok_while = -11,
+  tok_true = -12,
+  tok_false = -13,
 
   // operators
-  tok_binary = -11,
-  tok_unary = -12,
+  tok_binary = -14,
+  tok_unary = -15,
 
   // var definition
-  tok_var = -13
+  tok_var = -16,
+
+  tok_break = -17,
+  tok_continue = -18,
+  tok_and = -19,
+  tok_or = -20,
+  tok_not = -21
 };
 
 extern std::string IdentifierStr; // Filled in if tok_identifier

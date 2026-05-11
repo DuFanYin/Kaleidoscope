@@ -23,18 +23,37 @@ make
 程序从**标准输入**读入一整段 Kaleidoscope 源码，读到 **Ctrl+D** 结束。非交互时可以：
 
 ```bash
-./build/kaleidoscope < examples/sample.kal
+./build/kaleidoscope < examples/pricing.kal
+./build/kaleidoscope --jit < examples/credit_policy.kal
 ```
 
 - **默认模式**：在退出前生成机器相关的目标文件（便于和别的代码链接成最终程序）。  
 - **`--jit` 模式**：在进程里直接跑顶层表达式，适合快速试算。  
-- **`make run-aot`**：仓库自带一条「先编译再链接再运行」的演示，用来在非 JIT 下看到数值结果（需在源码里提供约定的入口函数；默认试跑用的源码也一并附上）。
+- **`make run-aot`**：默认用 `examples/pricing.kal`（内含 `entry()`）；先编译 Kaleidoscope 源码为 `build/output.o` 再与宿主运行时链接运行。
+
+**`examples/`** 里的小场景脚本（不是靠炫语法堆砌，而是为了一件事算到底）：阶梯计费（`pricing.kal`）、信贷策略（`credit_policy.kal`）、产线巡检 + 日历（`factory_calendar.kal`）、定投复利与达标月数（`savings_plan.kal`）。
 
 `./build/kaleidoscope --help` 可查看简短说明。
 
-## 语言本身
+## 这个 mini lang 有什么能力
 
-Kaleidoscope 的语法与语义以官方教程为准：函数定义、运算符、控制流、`var` 等教程里逐步加上的内容，在这里按同一套教学路线实现。细节与章节对应关系可直接读 [教程目录](https://llvm.org/docs/tutorial/MyFirstLanguageFrontend/index.html)。
+- **数值计算**：核心数值类型是 `double`，适合表达式计算与函数式组合。
+- **函数定义与调用**：支持 `def` 定义函数、按参数调用、通过 `extern` 声明宿主函数。
+- **控制流**：`if/then/else`，`for/in`，`while/in`，以及 `break` / `continue`。
+- **变量与作用域**：支持 `var ... in ...` 局部变量绑定，以及赋值操作。
+- **自定义运算符**：可定义 `unary` / `binary` 运算符并设置二元运算符优先级。
+- **布尔字面量**：支持 `true` / `false`（在语言里映射为 1.0 / 0.0）。
+- **两种执行方式**：既可以 JIT 直接求值，也可以编译为目标文件再链接执行。
+
+一个很小的例子（声明宿主打印函数 + 定义函数）：
+
+```text
+extern printd(x);
+def add(a b) a + b;
+printd(add(3, 4));
+```
+
+语言能力整体与 LLVM 官方 Kaleidoscope 教学路线一致，可在 [教程目录](https://llvm.org/docs/tutorial/MyFirstLanguageFrontend/index.html) 中对照阅读。
 
 ## 延伸阅读
 

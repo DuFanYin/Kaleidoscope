@@ -109,6 +109,60 @@ public:
   llvm::Value *codegen() override;
 };
 
+/// WhileExprAST - Expression class for while/in.
+class WhileExprAST : public ExprAST {
+  std::unique_ptr<ExprAST> Cond, Body;
+
+public:
+  WhileExprAST(std::unique_ptr<ExprAST> Cond, std::unique_ptr<ExprAST> Body)
+      : Cond(std::move(Cond)), Body(std::move(Body)) {}
+
+  llvm::Value *codegen() override;
+};
+
+/// Logical AND with short-circuit; operands are doubles, result 0/1 as double.
+class LogicalAndExprAST : public ExprAST {
+  std::unique_ptr<ExprAST> LHS, RHS;
+
+public:
+  LogicalAndExprAST(std::unique_ptr<ExprAST> LHS, std::unique_ptr<ExprAST> RHS)
+      : LHS(std::move(LHS)), RHS(std::move(RHS)) {}
+
+  llvm::Value *codegen() override;
+};
+
+/// Logical OR with short-circuit; operands are doubles, result 0/1 as double.
+class LogicalOrExprAST : public ExprAST {
+  std::unique_ptr<ExprAST> LHS, RHS;
+
+public:
+  LogicalOrExprAST(std::unique_ptr<ExprAST> LHS, std::unique_ptr<ExprAST> RHS)
+      : LHS(std::move(LHS)), RHS(std::move(RHS)) {}
+
+  llvm::Value *codegen() override;
+};
+
+/// Keyword `not`: truthy iff operand compares unequal to 0.0; returns 1.0/0.0.
+class NotExprAST : public ExprAST {
+  std::unique_ptr<ExprAST> Operand;
+
+public:
+  explicit NotExprAST(std::unique_ptr<ExprAST> Operand)
+      : Operand(std::move(Operand)) {}
+
+  llvm::Value *codegen() override;
+};
+
+class BreakExprAST : public ExprAST {
+public:
+  llvm::Value *codegen() override;
+};
+
+class ContinueExprAST : public ExprAST {
+public:
+  llvm::Value *codegen() override;
+};
+
 /// VarExprAST - Expression class for var/in
 class VarExprAST : public ExprAST {
   std::vector<std::pair<std::string, std::unique_ptr<ExprAST>>> VarNames;
